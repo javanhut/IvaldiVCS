@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
@@ -182,7 +183,12 @@ var switchTimelineCmd = &cobra.Command{
 		}
 		
 		// Check for uncommitted changes
-		casStore := cas.NewMemoryCAS()
+		objectsDir := filepath.Join(ivaldiDir, "objects")
+		casStore, err := cas.NewFileCAS(objectsDir)
+		if err != nil {
+			return fmt.Errorf("failed to initialize storage: %w", err)
+		}
+		
 		workDir, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to get working directory: %w", err)

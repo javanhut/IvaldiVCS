@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
+	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/hamtdir"
@@ -65,26 +66,37 @@ func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
 
 	timelineName, err := refsManager.GetCurrentTimeline()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current timeline: %w", err)
+		// If there's no current timeline (no HEAD file), scan the current workspace
+		// and create an index based on what's currently in the working directory
+		wsIndex, err := m.ScanWorkspace()
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan workspace: %w", err)
+		}
+		
+		return &WorkspaceState{
+			TimelineName: "", // No current timeline
+			Index:        wsIndex,
+			RootDir:      nil,
+			IvaldiDir:    m.IvaldiDir,
+			WorkDir:      m.WorkDir,
+		}, nil
 	}
 
 	// Try to load workspace index from timeline metadata
-	_, err = refsManager.GetTimeline(timelineName, refs.LocalTimeline)
+	timeline, err := refsManager.GetTimeline(timelineName, refs.LocalTimeline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get timeline %s: %w", timelineName, err)
 	}
 
-	// For now, create empty index if timeline has no workspace state
-	// In a full implementation, this would be stored in timeline metadata
-	wsBuilder := wsindex.NewBuilder(m.CAS)
-	emptyIndex, err := wsBuilder.Build(nil)
+	// Create workspace index from the timeline's commit
+	wsIndex, err := m.createTargetIndex(*timeline)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create empty index: %w", err)
+		return nil, fmt.Errorf("failed to create workspace index from timeline: %w", err)
 	}
 
 	return &WorkspaceState{
 		TimelineName: timelineName,
-		Index:        emptyIndex,
+		Index:        wsIndex,
 		IvaldiDir:    m.IvaldiDir,
 		WorkDir:      m.WorkDir,
 	}, nil
@@ -206,37 +218,113 @@ func (m *Materializer) MaterializeTimeline(timelineName string) error {
 }
 
 // createTargetIndex creates a target workspace index for a timeline.
-// In a full implementation, this would read the actual stored workspace state.
+// This reads the actual commit object and extracts the workspace files.
 func (m *Materializer) createTargetIndex(timeline refs.Timeline) (wsindex.IndexRef, error) {
 	wsBuilder := wsindex.NewBuilder(m.CAS)
 	
-	// For demonstration, create some dummy files based on timeline hash
-	var files []wsindex.FileMetadata
-	
-	if timeline.Blake3Hash != [32]byte{} {
-		// Timeline has content - create a sample file
-		content := fmt.Sprintf("Timeline: %s\nBlake3: %x\n", "sample", timeline.Blake3Hash)
-		contentBytes := []byte(content)
-		
-		fileBuilder := filechunk.NewBuilder(m.CAS, filechunk.DefaultParams())
-		fileRef, err := fileBuilder.Build(contentBytes)
-		if err != nil {
-			return wsindex.IndexRef{}, err
-		}
-		
-		sampleFile := wsindex.FileMetadata{
-			Path:     "timeline-info.txt",
-			FileRef:  fileRef,
-			ModTime:  time.Now(),
-			Mode:     0644,
-			Size:     int64(len(contentBytes)),
-			Checksum: cas.SumB3(contentBytes),
-		}
-		
-		files = append(files, sampleFile)
+	// If timeline has no content (empty hash), return empty index
+	if timeline.Blake3Hash == [32]byte{} {
+		return wsBuilder.Build(nil)
 	}
 	
+	// Read the commit object using the timeline's Blake3 hash
+	var commitHash cas.Hash
+	copy(commitHash[:], timeline.Blake3Hash[:])
+	
+	// Use commit reader to get the commit and its tree
+	commitReader := commit.NewCommitReader(m.CAS)
+	commitObj, err := commitReader.ReadCommit(commitHash)
+	if err != nil {
+		return wsindex.IndexRef{}, fmt.Errorf("failed to read commit object: %w", err)
+	}
+	
+	// Read the tree structure
+	tree, err := commitReader.ReadTree(commitObj)
+	if err != nil {
+		return wsindex.IndexRef{}, fmt.Errorf("failed to read tree structure: %w", err)
+	}
+	
+	// List all files in the tree
+	filePaths, err := commitReader.ListFiles(tree)
+	if err != nil {
+		return wsindex.IndexRef{}, fmt.Errorf("failed to list files in tree: %w", err)
+	}
+	
+	// Create file metadata for each file
+	var files []wsindex.FileMetadata
+	for _, filePath := range filePaths {
+		// Get file content to determine size and checksum
+		content, err := commitReader.GetFileContent(tree, filePath)
+		if err != nil {
+			return wsindex.IndexRef{}, fmt.Errorf("failed to get content for file %s: %w", filePath, err)
+		}
+		
+		// Get the file's NodeRef from the tree by navigating to it
+		fileRef, err := m.getFileRefFromTree(tree, filePath)
+		if err != nil {
+			return wsindex.IndexRef{}, fmt.Errorf("failed to get file ref for %s: %w", filePath, err)
+		}
+		
+		// Create file metadata
+		fileMetadata := wsindex.FileMetadata{
+			Path:     filePath,
+			FileRef:  fileRef,
+			ModTime:  commitObj.CommitTime, // Use commit time as file mod time
+			Mode:     0644,                 // Default file mode
+			Size:     int64(len(content)),
+			Checksum: cas.SumB3(content),
+		}
+		
+		files = append(files, fileMetadata)
+	}
+	
+	// Build the workspace index
 	return wsBuilder.Build(files)
+}
+
+// getFileRefFromTree extracts the NodeRef for a specific file from the tree.
+func (m *Materializer) getFileRefFromTree(tree *commit.TreeObject, filePath string) (filechunk.NodeRef, error) {
+	// Split the path into parts
+	parts := strings.Split(filePath, string(filepath.Separator))
+	if len(parts) == 0 {
+		return filechunk.NodeRef{}, fmt.Errorf("invalid file path: %s", filePath)
+	}
+	
+	// Navigate through the HAMT structure to find the file
+	hamtLoader := hamtdir.NewLoader(m.CAS)
+	currentDirRef := tree.DirRef
+	
+	for i, part := range parts {
+		entries, err := hamtLoader.List(currentDirRef)
+		if err != nil {
+			return filechunk.NodeRef{}, fmt.Errorf("failed to read directory entries: %w", err)
+		}
+		
+		if i == len(parts)-1 {
+			// This is the final file
+			for _, entry := range entries {
+				if entry.Name == part && entry.Type == hamtdir.FileEntry {
+					return *entry.File, nil
+				}
+			}
+			return filechunk.NodeRef{}, fmt.Errorf("file not found: %s", part)
+		} else {
+			// Navigate to subdirectory
+			found := false
+			for _, entry := range entries {
+				if entry.Name == part && entry.Type == hamtdir.DirEntry {
+					currentDirRef = *entry.Dir
+					found = true
+					break
+				}
+			}
+			if !found {
+				return filechunk.NodeRef{}, fmt.Errorf("directory not found: %s", part)
+			}
+		}
+	}
+	
+	return filechunk.NodeRef{}, fmt.Errorf("unexpected error in getFileRefFromTree")
 }
 
 // applyChangesToWorkspace applies file changes to the working directory.
