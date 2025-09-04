@@ -5,7 +5,9 @@ import (
 	"log"
 	"os"
 
+	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
+	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -179,25 +181,35 @@ var switchTimelineCmd = &cobra.Command{
 			return nil
 		}
 		
-		// TODO: In a full implementation, we would:
-		// 1. Check for uncommitted changes
-		// 2. Auto-shelve changes if needed
-		// 3. Update working directory to match target timeline state
-		
-		// For now, just update the HEAD reference
-		err = refsManager.SetCurrentTimeline(name)
+		// Check for uncommitted changes
+		casStore := cas.NewMemoryCAS()
+		workDir, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("failed to switch to timeline '%s': %w", name, err)
+			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+		
+		materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+		
+		// Check workspace status
+		status, err := materializer.GetWorkspaceStatus()
+		if err != nil {
+			log.Printf("Warning: Could not check workspace status: %v", err)
+		} else if !status.Clean {
+			fmt.Printf("Warning: You have uncommitted changes:\n")
+			for _, change := range status.ListChanges() {
+				fmt.Printf("  %s\n", change)
+			}
+			fmt.Printf("Consider using 'ivaldi gather' and 'ivaldi seal' to commit them first.\n")
+		}
+		
+		// Materialize the target timeline
+		err = materializer.MaterializeTimeline(name)
+		if err != nil {
+			return fmt.Errorf("failed to materialize timeline '%s': %w", name, err)
 		}
 		
 		fmt.Printf("Switched to timeline '%s'\n", name)
-		
-		// Note: In a full VCS implementation, we would also need to:
-		// - Update working directory files to match the timeline's state
-		// - Handle merge conflicts if there are uncommitted changes
-		// - Implement auto-shelving functionality
-		fmt.Println("Note: Working directory files are not updated in this implementation.")
-		fmt.Println("In a full VCS, files would be updated to match the timeline state.")
+		fmt.Printf("Workspace files updated to match timeline state.\n")
 		
 		return nil
 	},
