@@ -31,7 +31,25 @@ func Execute() {
 }
 
 func init() {
+	// Core commands
 	rootCmd.AddCommand(initialCmd)
+	
+	// Timeline management commands
+	rootCmd.AddCommand(timelineCmd)
+	timelineCmd.AddCommand(createTimelineCmd)
+	timelineCmd.AddCommand(switchTimelineCmd)
+	timelineCmd.AddCommand(listTimelineCmd)
+	timelineCmd.AddCommand(removeTimelineCmd)
+	
+	// File and commit management commands
+	rootCmd.AddCommand(gatherCmd)
+	rootCmd.AddCommand(sealCmd)
+	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(excludeCommand)
+	
+	// Remote repository commands
+	rootCmd.AddCommand(uploadCmd)
+	rootCmd.AddCommand(downloadCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {
@@ -40,7 +58,7 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 		errMsg := fmt.Sprintf("Forge takes in 0 argument %d was given.", numOfArgs)
 		log.Fatal(errMsg)
 	}
-	
+
 	ivaldiDir := ".ivaldi"
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -52,7 +70,7 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 	if err != nil && !os.IsExist(err) {
 		log.Fatal(err)
 	}
-	
+
 	log.Println("Ivaldi repository initialized")
 
 	// Initialize refs system
@@ -66,14 +84,14 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 		// Check if we're in a Git repository
 		if _, err := os.Stat(".git"); err == nil {
 			log.Println("Detecting existing Git repository, importing refs and converting objects...")
-			
+
 			// Import Git refs first
 			if err := refsManager.InitializeFromGit(".git"); err != nil {
 				log.Printf("Warning: Failed to import Git refs: %v", err)
 			} else {
 				log.Println("Successfully imported Git refs to Ivaldi timeline system")
 			}
-			
+
 			// Convert Git objects with shared database connection
 			log.Println("Converting Git objects to Ivaldi format...")
 			gitResult, err := converter.ConvertGitObjectsToIvaldi(".git", ivaldiDir)
@@ -88,7 +106,24 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 		} else {
 			// Initialize default timeline for new repository
 			log.Println("Creating default 'main' timeline...")
-			// Create an empty main branch (we'd need a proper commit for this in real implementation)
+			
+			// Create main timeline with zero hashes (empty repository)
+			var zeroHash [32]byte
+			err = refsManager.CreateTimeline(
+				"main",
+				refs.LocalTimeline,
+				zeroHash, // blake3Hash 
+				zeroHash, // sha256Hash
+				"",       // gitSHA1Hash
+				"Initial empty repository",
+			)
+			if err != nil {
+				log.Printf("Warning: Failed to create main timeline: %v", err)
+			} else {
+				log.Println("Successfully created main timeline")
+			}
+			
+			// Set main as current timeline
 			if err := refsManager.SetCurrentTimeline("main"); err != nil {
 				log.Printf("Warning: Failed to set current timeline: %v", err)
 			}
@@ -114,6 +149,12 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 				log.Printf("  ... and %d more errors", len(result.Errors)-3)
 			}
 		}
+	}
+
+	// Create initial snapshot for status tracking
+	log.Println("Creating initial snapshot for status tracking...")
+	if err := updateLastSnapshot(workDir, ivaldiDir); err != nil {
+		log.Printf("Warning: Failed to create initial snapshot: %v", err)
 	}
 }
 
