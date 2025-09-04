@@ -35,7 +35,7 @@ type Timeline struct {
 type RefsManager struct {
 	ivaldiDir string
 	refsDir   string
-	db        *store.DB
+	db        *store.SharedDB
 }
 
 // NewRefsManager creates a new refs manager
@@ -52,10 +52,9 @@ func NewRefsManager(ivaldiDir string) (*RefsManager, error) {
 		}
 	}
 
-	dbPath := filepath.Join(ivaldiDir, "objects.db")
-	db, err := store.Open(dbPath)
+	db, err := store.GetSharedDB(ivaldiDir)
 	if err != nil {
-		return nil, fmt.Errorf("open store: %w", err)
+		return nil, fmt.Errorf("open shared store: %w", err)
 	}
 
 	return &RefsManager{

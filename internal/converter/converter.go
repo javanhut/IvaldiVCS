@@ -24,14 +24,13 @@ func ConvertGitObjectsToIvaldi(gitDir, ivaldiDir string) (*ConversionResult, err
 	result := &ConversionResult{}
 
 	// Open the Ivaldi KV store
-	fmt.Println("Opening Ivaldi KV store for Git conversion...")
-	dbPath := filepath.Join(ivaldiDir, "objects.db")
-	db, err := store.Open(dbPath)
+	fmt.Println("Opening shared Ivaldi KV store for Git conversion...")
+	db, err := store.GetSharedDB(ivaldiDir)
 	if err != nil {
-		return result, fmt.Errorf("open ivaldi store: %w", err)
+		return result, fmt.Errorf("open shared ivaldi store: %w", err)
 	}
 	defer db.Close()
-	fmt.Println("KV store opened successfully")
+	fmt.Println("Shared KV store opened successfully")
 
 	// Create objects directory
 	objectsDir := filepath.Join(ivaldiDir, "objects")
@@ -60,7 +59,7 @@ func ConvertGitObjectsToIvaldi(gitDir, ivaldiDir string) (*ConversionResult, err
 }
 
 // convertSingleGitObject converts one Git object to Ivaldi format.
-func convertSingleGitObject(objectPath, ivaldiObjectsDir string, db *store.DB) error {
+func convertSingleGitObject(objectPath, ivaldiObjectsDir string, db *store.SharedDB) error {
 	// Convert Git object to Ivaldi format
 	digest, content, gitSHA1, err := objects.ConvertGitBlobToIvaldi(objectPath)
 	if err != nil {
@@ -111,10 +110,9 @@ func SnapshotCurrentFiles(workDir, ivaldiDir string) (*ConversionResult, error) 
 	result := &ConversionResult{}
 
 	// Open the Ivaldi KV store
-	dbPath := filepath.Join(ivaldiDir, "objects.db")
-	db, err := store.Open(dbPath)
+	db, err := store.GetSharedDB(ivaldiDir)
 	if err != nil {
-		return result, fmt.Errorf("open ivaldi store: %w", err)
+		return result, fmt.Errorf("open shared ivaldi store: %w", err)
 	}
 	defer db.Close()
 
@@ -164,7 +162,7 @@ func SnapshotCurrentFiles(workDir, ivaldiDir string) (*ConversionResult, error) 
 }
 
 // createBlobFromFile creates an Ivaldi blob object from a file.
-func createBlobFromFile(filePath, relPath, ivaldiObjectsDir string, db *store.DB) error {
+func createBlobFromFile(filePath, relPath, ivaldiObjectsDir string, db *store.SharedDB) error {
 	// Read file content
 	content, err := objects.ReadFile(filePath)
 	if err != nil {
@@ -216,10 +214,9 @@ func createBlobFromFile(filePath, relPath, ivaldiObjectsDir string, db *store.DB
 // GenerateGitCompatiblePack converts Ivaldi objects back to Git-compatible pack format.
 func GenerateGitCompatiblePack(ivaldiDir string, humanKeys []string) ([]byte, error) {
 	// Open the Ivaldi KV store
-	dbPath := filepath.Join(ivaldiDir, "objects.db")
-	db, err := store.Open(dbPath)
+	db, err := store.GetSharedDB(ivaldiDir)
 	if err != nil {
-		return nil, fmt.Errorf("open ivaldi store: %w", err)
+		return nil, fmt.Errorf("open shared ivaldi store: %w", err)
 	}
 	defer db.Close()
 

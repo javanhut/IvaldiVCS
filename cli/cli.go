@@ -74,8 +74,17 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 				log.Println("Successfully imported Git refs to Ivaldi timeline system")
 			}
 			
-			// Convert Git objects (skip for now to avoid database locking issues)
-			log.Printf("Skipping Git object conversion due to database locking - will be implemented in separate command")
+			// Convert Git objects with shared database connection
+			log.Println("Converting Git objects to Ivaldi format...")
+			gitResult, err := converter.ConvertGitObjectsToIvaldi(".git", ivaldiDir)
+			if err != nil {
+				log.Printf("Warning: Failed to convert Git objects: %v", err)
+			} else {
+				log.Printf("Successfully converted %d Git objects", gitResult.Converted)
+				if gitResult.Skipped > 0 {
+					log.Printf("Skipped %d Git objects due to errors", gitResult.Skipped)
+				}
+			}
 		} else {
 			// Initialize default timeline for new repository
 			log.Println("Creating default 'main' timeline...")

@@ -5,9 +5,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
-
-	"github.com/javanhut/Ivaldi-vcs/internal/store"
 )
+
+// KeyLookup interface allows both *store.DB and *store.SharedDB to be used
+type KeyLookup interface {
+	LookupByKey(humanKey string) (blake3Hex, sha256Hex string, err error)
+}
 
 // A small wordlist – replace with a larger one (e.g., 2048+ words) for better entropy.
 var words = []string{
@@ -44,7 +47,7 @@ func makePhrase(numWords int, suffixDigits int) string {
 
 // GenerateUniquePhrase creates a unique phrase key, checking the DB for collisions.
 // Increase numWords / suffixDigits to reduce collision probability.
-func GenerateUniquePhrase(db *store.DB, numWords, suffixDigits int) (string, error) {
+func GenerateUniquePhrase(db KeyLookup, numWords, suffixDigits int) (string, error) {
 	// With 26 words, 2-3 words, and 3-4 digit suffix, collision probability is very low
 	// Try up to 10 attempts before giving up to prevent infinite loops
 	maxAttempts := 10
