@@ -33,11 +33,11 @@ import (
 
 // WorkspaceState represents the current state of a workspace.
 type WorkspaceState struct {
-	TimelineName string              // Name of current timeline
-	Index        wsindex.IndexRef    // Workspace file index
-	RootDir      *hamtdir.DirRef     // Root directory structure (optional)
-	IvaldiDir    string              // Path to .ivaldi directory
-	WorkDir      string              // Path to working directory
+	TimelineName string           // Name of current timeline
+	Index        wsindex.IndexRef // Workspace file index
+	RootDir      *hamtdir.DirRef  // Root directory structure (optional)
+	IvaldiDir    string           // Path to .ivaldi directory
+	WorkDir      string           // Path to working directory
 }
 
 // Materializer handles workspace materialization operations.
@@ -73,7 +73,7 @@ func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan workspace: %w", err)
 		}
-		
+
 		return &WorkspaceState{
 			TimelineName: "", // No current timeline
 			Index:        wsIndex,
@@ -100,7 +100,7 @@ func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
 // ScanWorkspace scans the current working directory and creates a workspace index.
 func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 	var files []wsindex.FileMetadata
-	
+
 	err := filepath.WalkDir(m.WorkDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -201,35 +201,37 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 
 	// Auto-shelf current changes before switching (if enabled and there are changes)
 	if enableAutoShelf && currentTimelineName != timelineName {
-		// Get the base state for the current timeline to compare against
-		baseIndex, err := m.getTimelineBaseIndex(currentTimelineName, refsManager)
+		// Get the TARGET timeline's state to see what files will be lost
+		targetBaseIndex, err := m.createTargetIndex(*timeline)
 		if err != nil {
-			return fmt.Errorf("failed to get base index for auto-shelving: %w", err)
+			return fmt.Errorf("failed to get target timeline index for auto-shelving: %w", err)
 		}
 
-		// Check if there are uncommitted changes
+		// Compare current workspace with TARGET timeline to see what will disappear
+		// This ensures we preserve ALL files that don't exist in the target
 		differ := diffmerge.NewDiffer(m.CAS)
-		diff, err := differ.DiffWorkspaces(baseIndex, currentState.Index)
+		diff, err := differ.DiffWorkspaces(targetBaseIndex, currentState.Index)
 		if err != nil {
 			return fmt.Errorf("failed to compute diff for auto-shelving: %w", err)
 		}
 
-		// If there are changes, create an auto-shelf
+		// If there are files that will be lost (they exist in workspace but not in target)
 		if len(diff.FileChanges) > 0 {
 			shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
-			
+
 			// Remove any existing auto-shelf for the current timeline first
 			if err := shelfManager.RemoveAutoShelf(currentTimelineName); err != nil {
 				// Log but don't fail - maybe there was no auto-shelf
 			}
-			
-			// Create new auto-shelf
-			autoShelf, err := shelfManager.CreateAutoShelf(currentTimelineName, currentState.Index, baseIndex)
+
+			// Create new auto-shelf with the TARGET timeline as base
+			// This preserves all files that would be lost when switching
+			autoShelf, err := shelfManager.CreateAutoShelf(currentTimelineName, currentState.Index, targetBaseIndex)
 			if err != nil {
 				return fmt.Errorf("failed to create auto-shelf: %w", err)
 			}
-			
-			fmt.Printf("Auto-shelved %d changes from timeline '%s' (shelf: %s)\n", 
+
+			fmt.Printf("Auto-shelved %d changes from timeline '%s' (shelf: %s)\n",
 				len(diff.FileChanges), currentTimelineName, autoShelf.ID)
 		}
 	}
@@ -247,9 +249,9 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 		if err == nil && autoShelf != nil {
 			// Use the shelved workspace state instead of the clean timeline state
 			targetIndex = autoShelf.WorkspaceIndex
-			fmt.Printf("Restoring auto-shelved changes for timeline '%s' (shelf: %s)\n", 
+			fmt.Printf("Restoring auto-shelved changes for timeline '%s' (shelf: %s)\n",
 				timelineName, autoShelf.ID)
-			
+
 			// Remove the auto-shelf since we're applying it
 			if err := shelfManager.RemoveAutoShelf(timelineName); err != nil {
 				fmt.Printf("Warning: failed to remove applied auto-shelf: %v\n", err)
@@ -283,35 +285,36 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 // This reads the actual commit object and extracts the workspace files.
 func (m *Materializer) createTargetIndex(timeline refs.Timeline) (wsindex.IndexRef, error) {
 	wsBuilder := wsindex.NewBuilder(m.CAS)
-	
+
 	// If timeline has no content (empty hash), return empty index
+	// This represents a truly empty repository with no initial commit
 	if timeline.Blake3Hash == [32]byte{} {
 		return wsBuilder.Build(nil)
 	}
-	
+
 	// Read the commit object using the timeline's Blake3 hash
 	var commitHash cas.Hash
 	copy(commitHash[:], timeline.Blake3Hash[:])
-	
+
 	// Use commit reader to get the commit and its tree
 	commitReader := commit.NewCommitReader(m.CAS)
 	commitObj, err := commitReader.ReadCommit(commitHash)
 	if err != nil {
 		return wsindex.IndexRef{}, fmt.Errorf("failed to read commit object: %w", err)
 	}
-	
+
 	// Read the tree structure
 	tree, err := commitReader.ReadTree(commitObj)
 	if err != nil {
 		return wsindex.IndexRef{}, fmt.Errorf("failed to read tree structure: %w", err)
 	}
-	
+
 	// List all files in the tree
 	filePaths, err := commitReader.ListFiles(tree)
 	if err != nil {
 		return wsindex.IndexRef{}, fmt.Errorf("failed to list files in tree: %w", err)
 	}
-	
+
 	// Create file metadata for each file
 	var files []wsindex.FileMetadata
 	for _, filePath := range filePaths {
@@ -320,13 +323,13 @@ func (m *Materializer) createTargetIndex(timeline refs.Timeline) (wsindex.IndexR
 		if err != nil {
 			return wsindex.IndexRef{}, fmt.Errorf("failed to get content for file %s: %w", filePath, err)
 		}
-		
+
 		// Get the file's NodeRef from the tree by navigating to it
 		fileRef, err := m.getFileRefFromTree(tree, filePath)
 		if err != nil {
 			return wsindex.IndexRef{}, fmt.Errorf("failed to get file ref for %s: %w", filePath, err)
 		}
-		
+
 		// Create file metadata
 		fileMetadata := wsindex.FileMetadata{
 			Path:     filePath,
@@ -336,10 +339,10 @@ func (m *Materializer) createTargetIndex(timeline refs.Timeline) (wsindex.IndexR
 			Size:     int64(len(content)),
 			Checksum: cas.SumB3(content),
 		}
-		
+
 		files = append(files, fileMetadata)
 	}
-	
+
 	// Build the workspace index
 	return wsBuilder.Build(files)
 }
@@ -352,10 +355,9 @@ func (m *Materializer) getTimelineBaseIndex(timelineName string, refsManager *re
 		wsBuilder := wsindex.NewBuilder(m.CAS)
 		return wsBuilder.Build(nil)
 	}
-	
+
 	return m.createTargetIndex(*timeline)
 }
-
 
 // getFileRefFromTree extracts the NodeRef for a specific file from the tree.
 func (m *Materializer) getFileRefFromTree(tree *commit.TreeObject, filePath string) (filechunk.NodeRef, error) {
@@ -364,17 +366,17 @@ func (m *Materializer) getFileRefFromTree(tree *commit.TreeObject, filePath stri
 	if len(parts) == 0 {
 		return filechunk.NodeRef{}, fmt.Errorf("invalid file path: %s", filePath)
 	}
-	
+
 	// Navigate through the HAMT structure to find the file
 	hamtLoader := hamtdir.NewLoader(m.CAS)
 	currentDirRef := tree.DirRef
-	
+
 	for i, part := range parts {
 		entries, err := hamtLoader.List(currentDirRef)
 		if err != nil {
 			return filechunk.NodeRef{}, fmt.Errorf("failed to read directory entries: %w", err)
 		}
-		
+
 		if i == len(parts)-1 {
 			// This is the final file
 			for _, entry := range entries {
@@ -398,7 +400,7 @@ func (m *Materializer) getFileRefFromTree(tree *commit.TreeObject, filePath stri
 			}
 		}
 	}
-	
+
 	return filechunk.NodeRef{}, fmt.Errorf("unexpected error in getFileRefFromTree")
 }
 
@@ -616,9 +618,9 @@ func (m *Materializer) GetWorkspaceStatus() (*WorkspaceStatus, error) {
 
 // WorkspaceStatus represents the current status of workspace files.
 type WorkspaceStatus struct {
-	TimelineName string                    // Current timeline
-	Clean        bool                      // True if workspace matches tracked state
-	Changes      []diffmerge.FileChange    // List of changes in workspace
+	TimelineName string                 // Current timeline
+	Clean        bool                   // True if workspace matches tracked state
+	Changes      []diffmerge.FileChange // List of changes in workspace
 }
 
 // Summary returns a human-readable summary of the workspace status.
@@ -639,7 +641,7 @@ func (s *WorkspaceStatus) Summary() string {
 		}
 	}
 
-	return fmt.Sprintf("Workspace dirty (timeline: %s, +%d ~%d -%d)", 
+	return fmt.Sprintf("Workspace dirty (timeline: %s, +%d ~%d -%d)",
 		s.TimelineName, added, modified, removed)
 }
 
@@ -661,10 +663,10 @@ func (s *WorkspaceStatus) ListChanges() []string {
 
 // Stash represents a temporary storage of workspace changes.
 type Stash struct {
-	Name        string              // Stash name
-	Description string              // Description of changes
-	Index       wsindex.IndexRef    // Stashed workspace state
-	Created     time.Time           // When stash was created
+	Name        string           // Stash name
+	Description string           // Description of changes
+	Index       wsindex.IndexRef // Stashed workspace state
+	Created     time.Time        // When stash was created
 }
 
 // StashManager handles workspace stashing operations.
@@ -783,7 +785,7 @@ func (sm *StashManager) DropStash(name string) error {
 	defer refsManager.Close()
 
 	stashTagName := fmt.Sprintf("stash/%s", name)
-	
+
 	// Remove the tag file
 	tagPath := filepath.Join(sm.Materializer.IvaldiDir, "refs", "tags", stashTagName)
 	err = os.Remove(tagPath)

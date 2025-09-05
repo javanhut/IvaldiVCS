@@ -33,20 +33,20 @@ func Execute() {
 func init() {
 	// Core commands
 	rootCmd.AddCommand(initialCmd)
-	
+
 	// Timeline management commands
 	rootCmd.AddCommand(timelineCmd)
 	timelineCmd.AddCommand(createTimelineCmd)
 	timelineCmd.AddCommand(switchTimelineCmd)
 	timelineCmd.AddCommand(listTimelineCmd)
 	timelineCmd.AddCommand(removeTimelineCmd)
-	
+
 	// File and commit management commands
 	rootCmd.AddCommand(gatherCmd)
 	rootCmd.AddCommand(sealCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(excludeCommand)
-	
+
 	// Remote repository commands
 	rootCmd.AddCommand(uploadCmd)
 	rootCmd.AddCommand(downloadCmd)
@@ -106,13 +106,13 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 		} else {
 			// Initialize default timeline for new repository
 			log.Println("Creating default 'main' timeline...")
-			
-			// Create main timeline with zero hashes (empty repository)
+
+			// Initially create main timeline with zero hashes
 			var zeroHash [32]byte
 			err = refsManager.CreateTimeline(
 				"main",
 				refs.LocalTimeline,
-				zeroHash, // blake3Hash 
+				zeroHash, // blake3Hash
 				zeroHash, // sha256Hash
 				"",       // gitSHA1Hash
 				"Initial empty repository",
@@ -122,7 +122,7 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 			} else {
 				log.Println("Successfully created main timeline")
 			}
-			
+
 			// Set main as current timeline
 			if err := refsManager.SetCurrentTimeline("main"); err != nil {
 				log.Printf("Warning: Failed to set current timeline: %v", err)
@@ -147,6 +147,40 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 			}
 			if len(result.Errors) > 3 {
 				log.Printf("  ... and %d more errors", len(result.Errors)-3)
+			}
+		}
+
+		// If we snapshotted files, create an initial commit
+		if result.Converted > 0 {
+			log.Println("Creating initial commit for existing files...")
+			commitHash, err := createInitialCommit(ivaldiDir, workDir)
+			if err != nil {
+				log.Printf("Warning: Failed to create initial commit: %v", err)
+			} else if commitHash != nil {
+				// Update main timeline to point to the initial commit
+				log.Println("Updating main timeline with initial commit...")
+
+				// Re-open refs manager to update the timeline
+				refsManager2, err := refs.NewRefsManager(ivaldiDir)
+				if err != nil {
+					log.Printf("Warning: Failed to reopen refs manager: %v", err)
+				} else {
+					defer refsManager2.Close()
+
+					// Update main timeline with the commit hash
+					err = refsManager2.UpdateTimeline(
+						"main",
+						refs.LocalTimeline,
+						*commitHash, // Use the actual commit hash
+						[32]byte{},  // No SHA256 for now
+						"",          // No Git SHA1
+					)
+					if err != nil {
+						log.Printf("Warning: Failed to update main timeline with initial commit: %v", err)
+					} else {
+						log.Println("Successfully updated main timeline with initial commit")
+					}
+				}
 			}
 		}
 	}
