@@ -68,6 +68,48 @@ These commands help you:
 - Switch between different repositories
 - Remove connections when no longer needed
 
+### Scout and Harvest Commands
+
+Discover and download remote timelines (branches) with the scout and harvest workflow:
+
+```bash
+# Discover what timelines are available on the remote
+ivaldi scout
+
+# Download all new remote timelines
+ivaldi harvest
+
+# Download specific timelines
+ivaldi harvest feature-branch bugfix-123
+
+# Update existing timelines with remote changes
+ivaldi harvest --update
+```
+
+The scout-harvest workflow enables:
+- **Selective collaboration** - Only download branches you need
+- **Efficient discovery** - See what's available before downloading
+- **Incremental updates** - Keep local timelines synchronized with remote
+- **Safe operations** - Won't overwrite local work without permission
+
+**Complete Workflow Example:**
+```bash
+# 1. Discover what's available
+ivaldi scout
+
+# 2. Harvest interesting branches
+ivaldi harvest feature-auth experimental-ui
+
+# 3. Switch to work on one
+ivaldi timeline switch feature-auth
+
+# 4. Make changes and upload
+echo "fix" > bug.txt
+ivaldi gather bug.txt
+ivaldi seal "Fix critical bug"
+ivaldi upload
+```
+
 ### Clone/Download from GitHub
 
 The `download` command automatically detects GitHub URLs and uses the GitHub API:
@@ -266,6 +308,10 @@ All GitHub functionality is integrated into the main Ivaldi commands:
 | View Connection | `ivaldi portal list` | See current repository connections |
 | Configure Connection | `ivaldi portal add owner/repo` | Configure repository connection |
 | Remove Connection | `ivaldi portal remove` | Remove repository connection |
+| Discover Remote Timelines | `ivaldi scout` | See available remote branches |
+| Download Remote Timelines | `ivaldi harvest` | Download remote branches selectively |
+| Download Specific Timeline | `ivaldi harvest branch-name` | Download specific remote branch |
+| Update Timelines | `ivaldi harvest --update` | Update existing timelines with remote changes |
 
 ## Future Enhancements
 

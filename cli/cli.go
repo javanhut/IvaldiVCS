@@ -51,6 +51,10 @@ func init() {
 	// Portal commands for repository connection management
 	rootCmd.AddCommand(portalCmd)
 	portalCmd.AddCommand(portalAddCmd, portalListCmd, portalRemoveCmd)
+
+	// Remote timeline discovery and harvesting commands
+	rootCmd.AddCommand(scoutCmd)
+	rootCmd.AddCommand(harvestCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {

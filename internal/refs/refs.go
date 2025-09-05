@@ -257,6 +257,111 @@ func (rm *RefsManager) RemoveGitHubRepository() error {
 	return rm.db.RemoveConfig("github.repository")
 }
 
+// CreateRemoteTimeline creates a remote timeline reference
+func (rm *RefsManager) CreateRemoteTimeline(name, gitSHA1Hash string, description string) error {
+	// For remote timelines, we initially store with zero hashes until we harvest
+	var zeroBlake3, zeroSHA256 [32]byte
+
+	return rm.CreateTimeline(
+		name,
+		RemoteTimeline,
+		zeroBlake3,
+		zeroSHA256,
+		gitSHA1Hash,
+		description,
+	)
+}
+
+// UpdateRemoteTimeline updates a remote timeline with harvested content
+func (rm *RefsManager) UpdateRemoteTimeline(name string, blake3Hash [32]byte, sha256Hash [32]byte, gitSHA1Hash string) error {
+	return rm.UpdateTimeline(name, RemoteTimeline, blake3Hash, sha256Hash, gitSHA1Hash)
+}
+
+// ListLocalTimelines returns only local timelines
+func (rm *RefsManager) ListLocalTimelines() ([]Timeline, error) {
+	return rm.ListTimelines(LocalTimeline)
+}
+
+// ListRemoteTimelines returns only remote timelines
+func (rm *RefsManager) ListRemoteTimelines() ([]Timeline, error) {
+	return rm.ListTimelines(RemoteTimeline)
+}
+
+// TimelineExists checks if a timeline exists (local or remote)
+func (rm *RefsManager) TimelineExists(name string, timelineType TimelineType) bool {
+	_, err := rm.GetTimeline(name, timelineType)
+	return err == nil
+}
+
+// GetTimelineSyncStatus compares local and remote timelines
+type TimelineSyncStatus struct {
+	Name          string
+	LocalExists   bool
+	RemoteExists  bool
+	LocalHash     [32]byte
+	RemoteGitHash string
+	Status        string // "up-to-date", "local-ahead", "remote-ahead", "diverged", "local-only", "remote-only"
+}
+
+// GetTimelineSyncStatuses returns sync status for all timelines
+func (rm *RefsManager) GetTimelineSyncStatuses() ([]TimelineSyncStatus, error) {
+	localTimelines, err := rm.ListLocalTimelines()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list local timelines: %w", err)
+	}
+
+	remoteTimelines, err := rm.ListRemoteTimelines()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote timelines: %w", err)
+	}
+
+	// Create a map of all timeline names
+	allNames := make(map[string]bool)
+	localMap := make(map[string]Timeline)
+	remoteMap := make(map[string]Timeline)
+
+	for _, tl := range localTimelines {
+		allNames[tl.Name] = true
+		localMap[tl.Name] = tl
+	}
+
+	for _, tl := range remoteTimelines {
+		allNames[tl.Name] = true
+		remoteMap[tl.Name] = tl
+	}
+
+	var statuses []TimelineSyncStatus
+	for name := range allNames {
+		status := TimelineSyncStatus{Name: name}
+
+		if local, hasLocal := localMap[name]; hasLocal {
+			status.LocalExists = true
+			status.LocalHash = local.Blake3Hash
+		}
+
+		if remote, hasRemote := remoteMap[name]; hasRemote {
+			status.RemoteExists = true
+			status.RemoteGitHash = remote.GitSHA1Hash
+		}
+
+		// Determine sync status
+		switch {
+		case status.LocalExists && !status.RemoteExists:
+			status.Status = "local-only"
+		case !status.LocalExists && status.RemoteExists:
+			status.Status = "remote-only"
+		case status.LocalExists && status.RemoteExists:
+			// For now, we'll need more logic to determine if they're in sync
+			// This would require comparing the actual commit content
+			status.Status = "needs-comparison"
+		}
+
+		statuses = append(statuses, status)
+	}
+
+	return statuses, nil
+}
+
 // writeTimeline writes a timeline to disk
 func (rm *RefsManager) writeTimeline(timeline Timeline) error {
 	refPath := rm.getRefPath(timeline.Name, timeline.Type)

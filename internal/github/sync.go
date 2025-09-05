@@ -355,3 +355,132 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	fmt.Printf("Successfully pushed commit to GitHub\n")
 	return nil
 }
+
+// GetRemoteTimelines fetches all branches from GitHub and creates remote timeline references
+func (rs *RepoSyncer) GetRemoteTimelines(ctx context.Context, owner, repo string) ([]*Branch, error) {
+	branches, err := rs.client.ListBranches(ctx, owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list branches: %w", err)
+	}
+
+	// Update refs with remote timeline information
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	for _, branch := range branches {
+		// Create or update remote timeline reference
+		description := fmt.Sprintf("Remote branch from %s/%s (SHA: %s)", owner, repo, branch.Commit.SHA[:7])
+		err = refsManager.CreateRemoteTimeline(branch.Name, branch.Commit.SHA, description)
+		if err != nil {
+			// Timeline might already exist, that's okay
+			continue
+		}
+	}
+
+	return branches, nil
+}
+
+// FetchTimeline downloads a specific timeline (branch) from GitHub
+func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineName string) error {
+	fmt.Printf("Fetching timeline '%s' from %s/%s...\n", timelineName, owner, repo)
+
+	// Get branch information
+	branchInfo, err := rs.client.GetBranch(ctx, owner, repo, timelineName)
+	if err != nil {
+		return fmt.Errorf("failed to get branch info: %w", err)
+	}
+
+	// Get the tree for this branch
+	tree, err := rs.client.GetTree(ctx, owner, repo, branchInfo.Commit.SHA, true)
+	if err != nil {
+		return fmt.Errorf("failed to get tree: %w", err)
+	}
+
+	// Download all files for this timeline
+	err = rs.downloadFiles(ctx, owner, repo, tree, branchInfo.Commit.SHA)
+	if err != nil {
+		return fmt.Errorf("failed to download files: %w", err)
+	}
+
+	// Create workspace index
+	materializer := workspace.NewMaterializer(rs.casStore, rs.ivaldiDir, rs.workDir)
+	wsIndex, err := materializer.ScanWorkspace()
+	if err != nil {
+		return fmt.Errorf("failed to scan workspace: %w", err)
+	}
+
+	wsLoader := wsindex.NewLoader(rs.casStore)
+	workspaceFiles, err := wsLoader.ListAll(wsIndex)
+	if err != nil {
+		return fmt.Errorf("failed to list workspace files: %w", err)
+	}
+
+	// Create persistent MMR
+	mmr, err := history.NewPersistentMMR(rs.casStore, rs.ivaldiDir)
+	if err != nil {
+		mmr = &history.PersistentMMR{MMR: history.NewMMR()}
+	}
+	defer mmr.Close()
+
+	// Create commit for this timeline
+	commitBuilder := commit.NewCommitBuilder(rs.casStore, mmr.MMR)
+	commitObj, err := commitBuilder.CreateCommit(
+		workspaceFiles,
+		nil, // TODO: Handle parent commits for proper history
+		"timeline-harvest",
+		"timeline-harvest",
+		fmt.Sprintf("Harvested timeline '%s' from GitHub (SHA: %s)", timelineName, branchInfo.Commit.SHA[:7]),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create commit: %w", err)
+	}
+
+	// Get commit hash
+	commitHash := commitBuilder.GetCommitHash(commitObj)
+
+	// Create or update local timeline
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	// Convert to hash array
+	var hashArray [32]byte
+	copy(hashArray[:], commitHash[:])
+
+	// Create local timeline
+	err = refsManager.CreateTimeline(
+		timelineName,
+		refs.LocalTimeline,
+		hashArray,
+		[32]byte{},
+		branchInfo.Commit.SHA,
+		fmt.Sprintf("Harvested from GitHub: %s/%s", owner, repo),
+	)
+	if err != nil {
+		// Timeline might already exist, update it instead
+		err = refsManager.UpdateTimeline(
+			timelineName,
+			refs.LocalTimeline,
+			hashArray,
+			[32]byte{},
+			branchInfo.Commit.SHA,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to update timeline: %w", err)
+		}
+	}
+
+	// Also update the remote timeline reference with the harvested content
+	err = refsManager.UpdateRemoteTimeline(timelineName, hashArray, [32]byte{}, branchInfo.Commit.SHA)
+	if err != nil {
+		// Remote timeline might not exist, that's okay
+	}
+
+	fmt.Printf("Successfully harvested timeline '%s'\n", timelineName)
+	return nil
+}

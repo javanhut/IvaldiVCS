@@ -349,6 +349,23 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 	return &b, nil
 }
 
+// ListBranches fetches all branches from a repository
+func (c *Client) ListBranches(ctx context.Context, owner, repo string) ([]*Branch, error) {
+	path := fmt.Sprintf("/repos/%s/%s/branches", owner, repo)
+	resp, err := c.doRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var branches []*Branch
+	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+		return nil, fmt.Errorf("failed to decode branches: %w", err)
+	}
+
+	return branches, nil
+}
+
 // GetFileContent fetches a file's content from a repository
 func (c *Client) GetFileContent(ctx context.Context, owner, repo, path, ref string) (*FileContent, error) {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
