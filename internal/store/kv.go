@@ -9,10 +9,11 @@ import (
 
 // Buckets
 var (
-	BucketKeyToB3   = []byte("key->b3")    // human key -> blake3 hex
-	BucketB3ToS2    = []byte("b3->s256")   // blake3 hex -> sha256 hex
-	BucketGitToB3   = []byte("git->b3")    // git sha1 hex -> blake3 hex
-	BucketGitToS256 = []byte("git->s256")  // git sha1 hex -> sha256 hex
+	BucketKeyToB3   = []byte("key->b3")   // human key -> blake3 hex
+	BucketB3ToS2    = []byte("b3->s256")  // blake3 hex -> sha256 hex
+	BucketGitToB3   = []byte("git->b3")   // git sha1 hex -> blake3 hex
+	BucketGitToS256 = []byte("git->s256") // git sha1 hex -> sha256 hex
+	BucketConfig    = []byte("config")    // repository configuration
 )
 
 type DB struct{ *bbolt.DB }
@@ -34,6 +35,9 @@ func Open(path string) (*DB, error) {
 			return e
 		}
 		if _, e := tx.CreateBucketIfNotExists(BucketGitToS256); e != nil {
+			return e
+		}
+		if _, e := tx.CreateBucketIfNotExists(BucketConfig); e != nil {
 			return e
 		}
 		return nil
@@ -123,4 +127,32 @@ func (db *DB) GetAllGitHashes() ([]string, error) {
 		})
 	})
 	return hashes, err
+}
+
+// PutConfig stores a configuration key-value pair.
+func (db *DB) PutConfig(key, value string) error {
+	return db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(BucketConfig).Put([]byte(key), []byte(value))
+	})
+}
+
+// GetConfig retrieves a configuration value by key.
+func (db *DB) GetConfig(key string) (string, error) {
+	var value string
+	err := db.View(func(tx *bbolt.Tx) error {
+		v := tx.Bucket(BucketConfig).Get([]byte(key))
+		if v == nil {
+			return errors.New("config key not found")
+		}
+		value = string(v)
+		return nil
+	})
+	return value, err
+}
+
+// RemoveConfig removes a configuration key-value pair.
+func (db *DB) RemoveConfig(key string) error {
+	return db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(BucketConfig).Delete([]byte(key))
+	})
 }

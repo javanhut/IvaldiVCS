@@ -36,10 +36,7 @@ func init() {
 
 	// Timeline management commands
 	rootCmd.AddCommand(timelineCmd)
-	timelineCmd.AddCommand(createTimelineCmd)
-	timelineCmd.AddCommand(switchTimelineCmd)
-	timelineCmd.AddCommand(listTimelineCmd)
-	timelineCmd.AddCommand(removeTimelineCmd)
+	timelineCmd.AddCommand(createTimelineCmd, switchTimelineCmd, listTimelineCmd, removeTimelineCmd)
 
 	// File and commit management commands
 	rootCmd.AddCommand(gatherCmd)
@@ -47,9 +44,13 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(excludeCommand)
 
-	// Remote repository commands
+	// Remote repository commands (now with GitHub integration)
 	rootCmd.AddCommand(uploadCmd)
 	rootCmd.AddCommand(downloadCmd)
+
+	// Portal commands for repository connection management
+	rootCmd.AddCommand(portalCmd)
+	portalCmd.AddCommand(portalAddCmd, portalListCmd, portalRemoveCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {
@@ -92,9 +93,9 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 				log.Println("Successfully imported Git refs to Ivaldi timeline system")
 			}
 
-			// Convert Git objects with shared database connection
+			// Convert Git objects with shared database connection using concurrent workers
 			log.Println("Converting Git objects to Ivaldi format...")
-			gitResult, err := converter.ConvertGitObjectsToIvaldi(".git", ivaldiDir)
+			gitResult, err := converter.ConvertGitObjectsToIvaldiConcurrent(".git", ivaldiDir, 8)
 			if err != nil {
 				log.Printf("Warning: Failed to convert Git objects: %v", err)
 			} else {
@@ -130,9 +131,9 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Create snapshot of current files
+	// Create snapshot of current files using concurrent workers
 	log.Println("Creating snapshot of current files...")
-	result, err := converter.SnapshotCurrentFiles(workDir, ivaldiDir)
+	result, err := converter.SnapshotCurrentFilesConcurrent(workDir, ivaldiDir, 8)
 	if err != nil {
 		log.Printf("Warning: Failed to snapshot files: %v", err)
 	} else {

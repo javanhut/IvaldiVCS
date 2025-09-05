@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/keys"
 	"github.com/javanhut/Ivaldi-vcs/internal/objects"
@@ -138,7 +139,7 @@ func SnapshotCurrentFiles(workDir, ivaldiDir string) (*ConversionResult, error) 
 		if err != nil {
 			return err
 		}
-		if filepath.HasPrefix(relPath, ".git") || filepath.HasPrefix(relPath, ".ivaldi") {
+		if strings.HasPrefix(relPath, ".git") || strings.HasPrefix(relPath, ".ivaldi") {
 			return nil
 		}
 
@@ -259,8 +260,8 @@ func GenerateGitCompatiblePack(ivaldiDir string, humanKeys []string) ([]byte, er
 		_ = sha256Hex // We have the SHA256 if needed for verification
 	}
 
-	// Generate the pack file
-	packData, err := pack.WritePack(packObjects, false) // No SHA256 trailer for Git compatibility
+	// Generate the pack file using concurrent compression (8 workers)
+	packData, err := pack.WritePackConcurrent(packObjects, false, 8) // No SHA256 trailer for Git compatibility
 	if err != nil {
 		return nil, fmt.Errorf("write pack file: %w", err)
 	}

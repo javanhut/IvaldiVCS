@@ -22,13 +22,13 @@ const (
 
 // Timeline represents a branch or tag reference
 type Timeline struct {
-	Name         string       `json:"name"`
-	Type         TimelineType `json:"type"`
-	Blake3Hash   [32]byte     `json:"blake3_hash"`
-	SHA256Hash   [32]byte     `json:"sha256_hash"`
-	GitSHA1Hash  string       `json:"git_sha1_hash,omitempty"` // Original Git hash if converted
-	LastUpdated  time.Time    `json:"last_updated"`
-	Description  string       `json:"description,omitempty"`
+	Name        string       `json:"name"`
+	Type        TimelineType `json:"type"`
+	Blake3Hash  [32]byte     `json:"blake3_hash"`
+	SHA256Hash  [32]byte     `json:"sha256_hash"`
+	GitSHA1Hash string       `json:"git_sha1_hash,omitempty"` // Original Git hash if converted
+	LastUpdated time.Time    `json:"last_updated"`
+	Description string       `json:"description,omitempty"`
 }
 
 // RefsManager handles timeline and reference management
@@ -72,13 +72,13 @@ func (rm *RefsManager) Close() error {
 // CreateTimeline creates a new timeline (branch)
 func (rm *RefsManager) CreateTimeline(name string, timelineType TimelineType, blake3Hash [32]byte, sha256Hash [32]byte, gitSHA1Hash string, description string) error {
 	timeline := Timeline{
-		Name:         name,
-		Type:         timelineType,
-		Blake3Hash:   blake3Hash,
-		SHA256Hash:   sha256Hash,
-		GitSHA1Hash:  gitSHA1Hash,
-		LastUpdated:  time.Now(),
-		Description:  description,
+		Name:        name,
+		Type:        timelineType,
+		Blake3Hash:  blake3Hash,
+		SHA256Hash:  sha256Hash,
+		GitSHA1Hash: gitSHA1Hash,
+		LastUpdated: time.Now(),
+		Description: description,
 	}
 
 	return rm.writeTimeline(timeline)
@@ -87,12 +87,12 @@ func (rm *RefsManager) CreateTimeline(name string, timelineType TimelineType, bl
 // UpdateTimeline updates an existing timeline
 func (rm *RefsManager) UpdateTimeline(name string, timelineType TimelineType, blake3Hash [32]byte, sha256Hash [32]byte, gitSHA1Hash string) error {
 	timeline := Timeline{
-		Name:         name,
-		Type:         timelineType,
-		Blake3Hash:   blake3Hash,
-		SHA256Hash:   sha256Hash,
-		GitSHA1Hash:  gitSHA1Hash,
-		LastUpdated:  time.Now(),
+		Name:        name,
+		Type:        timelineType,
+		Blake3Hash:  blake3Hash,
+		SHA256Hash:  sha256Hash,
+		GitSHA1Hash: gitSHA1Hash,
+		LastUpdated: time.Now(),
 	}
 
 	return rm.writeTimeline(timeline)
@@ -167,7 +167,7 @@ func (rm *RefsManager) ListTimelines(timelineType TimelineType) ([]Timeline, err
 
 		// Convert file path back to timeline name
 		timelineName := strings.ReplaceAll(relPath, string(filepath.Separator), "/")
-		
+
 		timeline, err := rm.GetTimeline(timelineName, timelineType)
 		if err != nil {
 			return err
@@ -214,27 +214,53 @@ func (rm *RefsManager) LookupByGitHash(gitSHA1 string) (blake3Hash [32]byte, sha
 	if err != nil {
 		return [32]byte{}, [32]byte{}, err
 	}
-	
+
 	blake3Bytes, err := hex.DecodeString(blake3Hex)
 	if err != nil {
 		return [32]byte{}, [32]byte{}, fmt.Errorf("decode blake3 hex: %w", err)
 	}
-	
+
 	sha256Bytes, err := hex.DecodeString(sha256Hex)
 	if err != nil {
 		return [32]byte{}, [32]byte{}, fmt.Errorf("decode sha256 hex: %w", err)
 	}
-	
+
 	copy(blake3Hash[:], blake3Bytes)
 	copy(sha256Hash[:], sha256Bytes)
-	
+
 	return blake3Hash, sha256Hash, nil
+}
+
+// SetGitHubRepository stores the GitHub repository configuration
+func (rm *RefsManager) SetGitHubRepository(owner, repo string) error {
+	repoURL := fmt.Sprintf("%s/%s", owner, repo)
+	return rm.db.PutConfig("github.repository", repoURL)
+}
+
+// GetGitHubRepository retrieves the GitHub repository configuration
+func (rm *RefsManager) GetGitHubRepository() (owner, repo string, err error) {
+	repoURL, err := rm.db.GetConfig("github.repository")
+	if err != nil {
+		return "", "", err
+	}
+
+	parts := strings.Split(repoURL, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid GitHub repository format: %s", repoURL)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// RemoveGitHubRepository removes the GitHub repository configuration
+func (rm *RefsManager) RemoveGitHubRepository() error {
+	return rm.db.RemoveConfig("github.repository")
 }
 
 // writeTimeline writes a timeline to disk
 func (rm *RefsManager) writeTimeline(timeline Timeline) error {
 	refPath := rm.getRefPath(timeline.Name, timeline.Type)
-	
+
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(refPath), 0755); err != nil {
 		return fmt.Errorf("create ref parent dir: %w", err)
@@ -372,10 +398,10 @@ func (rm *RefsManager) importGitRef(gitRefPath, name string, timelineType Timeli
 	// For now, create placeholder hashes - in a real implementation,
 	// we would look up the corresponding Ivaldi hashes or convert the Git object
 	var blake3Hash, sha256Hash [32]byte
-	
+
 	// Try to find existing mapping (this would be implemented with proper Git->Ivaldi conversion)
 	// For now, use zero hashes as placeholders
-	
+
 	description := fmt.Sprintf("Imported from Git ref: %s", gitSHA1)
 	return rm.CreateTimeline(name, timelineType, blake3Hash, sha256Hash, gitSHA1, description)
 }

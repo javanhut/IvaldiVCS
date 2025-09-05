@@ -159,8 +159,9 @@ var createTimelineCmd = &cobra.Command{
 }
 
 var listTimelineCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all timelines",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List all timelines",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check if we're in an Ivaldi repository
 		ivaldiDir := ".ivaldi"
@@ -232,9 +233,10 @@ var listTimelineCmd = &cobra.Command{
 }
 
 var switchTimelineCmd = &cobra.Command{
-	Use:   "switch <name>",
-	Short: "Switch to a timeline (auto-shelving if needed)",
-	Args:  cobra.ExactArgs(1),
+	Use:     "switch <name>",
+	Aliases: []string{"sw"},
+	Short:   "Switch to a timeline (auto-shelving if needed)",
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
@@ -293,9 +295,10 @@ var switchTimelineCmd = &cobra.Command{
 }
 
 var removeTimelineCmd = &cobra.Command{
-	Use:   "remove <name>",
-	Short: "Remove a timeline",
-	Args:  cobra.ExactArgs(1),
+	Use:     "remove <name>",
+	Aliases: []string{"rm"},
+	Short:   "Remove a timeline",
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 

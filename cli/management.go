@@ -1,14 +1,19 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
+	"github.com/javanhut/Ivaldi-vcs/internal/github"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
@@ -16,11 +21,166 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// isGitHubURL checks if the given URL is a GitHub repository URL
+func isGitHubURL(rawURL string) bool {
+	// Handle various GitHub URL formats
+	patterns := []string{
+		`^https?://github\.com/[\w-]+/[\w-]+`,
+		`^git@github\.com:[\w-]+/[\w-]+`,
+		`^github\.com/[\w-]+/[\w-]+`,
+		`^[\w-]+/[\w-]+$`, // Simple owner/repo format
+	}
+
+	for _, pattern := range patterns {
+		matched, _ := regexp.MatchString(pattern, rawURL)
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// parseGitHubURL extracts owner and repo from various GitHub URL formats
+func parseGitHubURL(rawURL string) (owner, repo string, err error) {
+	// Remove .git suffix if present
+	rawURL = strings.TrimSuffix(rawURL, ".git")
+
+	// Handle simple owner/repo format
+	if matched, _ := regexp.MatchString(`^[\w-]+/[\w-]+$`, rawURL); matched {
+		parts := strings.Split(rawURL, "/")
+		return parts[0], parts[1], nil
+	}
+
+	// Handle full URLs
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		// Try adding https:// if not present
+		if !strings.HasPrefix(rawURL, "http") && !strings.HasPrefix(rawURL, "git@") {
+			parsedURL, err = url.Parse("https://" + rawURL)
+			if err != nil {
+				return "", "", fmt.Errorf("invalid URL: %s", rawURL)
+			}
+		} else if strings.HasPrefix(rawURL, "git@github.com:") {
+			// Handle git@github.com:owner/repo format
+			path := strings.TrimPrefix(rawURL, "git@github.com:")
+			parts := strings.Split(path, "/")
+			if len(parts) == 2 {
+				return parts[0], parts[1], nil
+			}
+			return "", "", fmt.Errorf("invalid git URL format: %s", rawURL)
+		} else {
+			return "", "", err
+		}
+	}
+
+	// Extract path and parse owner/repo
+	path := strings.TrimPrefix(parsedURL.Path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid GitHub URL format: %s", rawURL)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// handleGitHubDownload handles downloading/cloning from GitHub
+func handleGitHubDownload(rawURL string, args []string) error {
+	// Parse GitHub URL
+	owner, repo, err := parseGitHubURL(rawURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse GitHub URL: %w", err)
+	}
+
+	// Determine target directory
+	targetDir := repo
+	if len(args) > 1 {
+		targetDir = args[1]
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Change to target directory
+	if err := os.Chdir(targetDir); err != nil {
+		return fmt.Errorf("failed to change directory: %w", err)
+	}
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	// Initialize Ivaldi repository
+	ivaldiDir := ".ivaldi"
+	if err := os.Mkdir(ivaldiDir, os.ModePerm); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to create .ivaldi directory: %w", err)
+	}
+
+	log.Println("Ivaldi repository initialized")
+
+	// Initialize refs system
+	refsManager, err := refs.NewRefsManager(ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to initialize refs: %w", err)
+	}
+	defer refsManager.Close()
+
+	// Create main timeline
+	var zeroHash [32]byte
+	err = refsManager.CreateTimeline(
+		"main",
+		refs.LocalTimeline,
+		zeroHash,
+		zeroHash,
+		"",
+		fmt.Sprintf("Clone from GitHub: %s/%s", owner, repo),
+	)
+	if err != nil {
+		log.Printf("Warning: Failed to create main timeline: %v", err)
+	}
+
+	// Set main as current timeline
+	if err := refsManager.SetCurrentTimeline("main"); err != nil {
+		log.Printf("Warning: Failed to set current timeline: %v", err)
+	}
+
+	// Store GitHub repository configuration
+	if err := refsManager.SetGitHubRepository(owner, repo); err != nil {
+		log.Printf("Warning: Failed to store GitHub repository configuration: %v", err)
+	} else {
+		fmt.Printf("Configured repository for GitHub: %s/%s\n", owner, repo)
+	}
+
+	// Create syncer and clone
+	syncer, err := github.NewRepoSyncer(ivaldiDir, workDir)
+	if err != nil {
+		return fmt.Errorf("failed to create syncer: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	fmt.Printf("Downloading from GitHub: %s/%s...\n", owner, repo)
+	if err := syncer.CloneRepository(ctx, owner, repo); err != nil {
+		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	fmt.Printf("Successfully downloaded repository from GitHub\n")
+	return nil
+}
+
 var uploadCmd = &cobra.Command{
-	Use:     "upload [remote] [timeline]",
+	Use:     "upload [branch]",
 	Aliases: []string{"push"},
-	Short:   "Upload timeline to remote repository",
-	Long:    `Uploads the current timeline or specified timeline to a remote repository`,
+	Short:   "Upload current timeline to GitHub",
+	Long: `Uploads the current timeline to the configured GitHub repository. The repository is automatically detected from the configuration set during 'ivaldi download'.
+Examples:
+  ivaldi upload                           # Upload current timeline to GitHub
+  ivaldi upload main                      # Upload to specific branch on GitHub
+  ivaldi upload github:owner/repo         # Upload to different GitHub repository (current timeline)
+  ivaldi upload github:owner/repo main    # Upload to different GitHub repository and branch`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check if we're in an Ivaldi repository
 		ivaldiDir := ".ivaldi"
@@ -28,9 +188,9 @@ var uploadCmd = &cobra.Command{
 			return fmt.Errorf("not in an Ivaldi repository (no .ivaldi directory found)")
 		}
 
-		remote := "origin"
-		if len(args) > 0 {
-			remote = args[0]
+		workDir, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get working directory: %w", err)
 		}
 
 		// Initialize refs manager
@@ -40,29 +200,73 @@ var uploadCmd = &cobra.Command{
 		}
 		defer refsManager.Close()
 
-		// Get current timeline or use specified one
-		timeline := ""
-		if len(args) > 1 {
-			timeline = args[1]
+		// Get current timeline
+		currentTimeline, err := refsManager.GetCurrentTimeline()
+		if err != nil {
+			return fmt.Errorf("failed to get current timeline: %w", err)
+		}
+
+		// Auto-detect GitHub repository and branch
+		var owner, repo, branch string
+		branch = currentTimeline // Default branch to current timeline name
+
+		// Check if GitHub repository is specified in arguments
+		if len(args) > 0 && strings.HasPrefix(args[0], "github:") {
+			// Parse GitHub repository from argument
+			repoPath := strings.TrimPrefix(args[0], "github:")
+			parts := strings.Split(repoPath, "/")
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid GitHub repository format. Use: github:owner/repo")
+			}
+			owner, repo = parts[0], parts[1]
+
+			// Check if branch is specified
+			if len(args) > 1 {
+				branch = args[1]
+			}
 		} else {
-			timeline, err = refsManager.GetCurrentTimeline()
+			// Try to auto-detect GitHub repository from configuration
+			var err error
+			owner, repo, err = refsManager.GetGitHubRepository()
 			if err != nil {
-				return fmt.Errorf("failed to get current timeline: %w", err)
+				return fmt.Errorf("no GitHub repository configured and none specified. Use 'ivaldi download' from GitHub first or specify 'github:owner/repo'")
+			}
+
+			// If first argument is not a GitHub URL, treat it as branch name
+			if len(args) > 0 {
+				branch = args[0]
 			}
 		}
 
-		// TODO: Implement actual upload functionality
-		// This would involve:
-		// 1. Connecting to remote repository
-		// 2. Determining what objects need to be uploaded
-		// 3. Creating pack files of missing objects
-		// 4. Uploading pack files and updating remote refs
-		// 5. Handling authentication and protocols (HTTP, SSH, etc.)
+		// Get current timeline's latest commit
+		timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
+		if err != nil {
+			return fmt.Errorf("failed to get timeline info: %w", err)
+		}
 
-		fmt.Printf("Uploading timeline '%s' to remote '%s'...\n", timeline, remote)
-		fmt.Println("Note: Remote upload functionality not yet implemented.")
-		fmt.Println("In a full implementation, this would upload objects and refs to a remote repository.")
+		if timeline.Blake3Hash == [32]byte{} {
+			return fmt.Errorf("no commits to push")
+		}
 
+		// Convert to cas.Hash
+		var commitHash cas.Hash
+		copy(commitHash[:], timeline.Blake3Hash[:])
+
+		// Create syncer and push
+		syncer, err := github.NewRepoSyncer(ivaldiDir, workDir)
+		if err != nil {
+			return fmt.Errorf("failed to create syncer: %w", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		fmt.Printf("Uploading to GitHub: %s/%s (branch: %s)...\n", owner, repo, branch)
+		if err := syncer.PushCommit(ctx, owner, repo, branch, commitHash); err != nil {
+			return fmt.Errorf("failed to push to GitHub: %w", err)
+		}
+
+		fmt.Printf("Successfully uploaded to GitHub\n")
 		return nil
 	},
 }
@@ -71,12 +275,17 @@ var downloadCmd = &cobra.Command{
 	Use:     "download <url> [directory]",
 	Aliases: []string{"clone"},
 	Short:   "Download/clone repository from remote",
-	Long:    `Downloads a complete repository from a remote URL into a new directory`,
+	Long:    `Downloads a complete repository from a remote URL into a new directory. Supports GitHub repositories and standard Ivaldi remotes.`,
 	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := args[0]
-		
-		// Determine target directory
+
+		// Check if this is a GitHub URL
+		if isGitHubURL(url) {
+			return handleGitHubDownload(url, args)
+		}
+
+		// Standard Ivaldi remote download
 		targetDir := ""
 		if len(args) > 1 {
 			targetDir = args[1]
@@ -91,23 +300,9 @@ var downloadCmd = &cobra.Command{
 			return fmt.Errorf("directory '%s' already exists", targetDir)
 		}
 
-		// TODO: Implement actual download/clone functionality
-		// This would involve:
-		// 1. Creating target directory
-		// 2. Initializing Ivaldi repository
-		// 3. Connecting to remote repository
-		// 4. Downloading object pack files
-		// 5. Extracting and storing objects in local format
-		// 6. Setting up remote references
-		// 7. Checking out working directory to match HEAD
-
+		// TODO: Implement actual download/clone functionality for standard Ivaldi remotes
 		fmt.Printf("Downloading repository from '%s' into '%s'...\n", url, targetDir)
-		fmt.Println("Note: Remote download/clone functionality not yet implemented.")
-		fmt.Println("In a full implementation, this would:")
-		fmt.Println("  1. Create the target directory")
-		fmt.Println("  2. Initialize Ivaldi repository")
-		fmt.Println("  3. Download all objects and refs from remote")
-		fmt.Println("  4. Set up working directory")
+		fmt.Println("Note: Standard Ivaldi remote download functionality not yet implemented.")
 
 		return nil
 	},
@@ -213,7 +408,7 @@ var sealCmd = &cobra.Command{
 	Long:  `Creates a sealed commit (equivalent to git commit) with the files that were gathered (staged)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		message := args[0]
-		
+
 		// Check if we're in an Ivaldi repository
 		ivaldiDir := ".ivaldi"
 		if _, err := os.Stat(ivaldiDir); os.IsNotExist(err) {
@@ -257,7 +452,7 @@ var sealCmd = &cobra.Command{
 
 		// Create commit using the new commit system
 		fmt.Printf("Creating commit objects for %d staged files...\n", len(stagedFiles))
-		
+
 		// Initialize storage system with persistent file-based CAS
 		objectsDir := filepath.Join(ivaldiDir, "objects")
 		casStore, err := cas.NewFileCAS(objectsDir)
@@ -266,25 +461,25 @@ var sealCmd = &cobra.Command{
 		}
 		mmr := history.NewMMR()
 		commitBuilder := commit.NewCommitBuilder(casStore, mmr)
-		
+
 		// Create materializer to scan workspace
 		materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
-		
+
 		// Scan the current workspace to create file metadata
 		wsIndex, err := materializer.ScanWorkspace()
 		if err != nil {
 			return fmt.Errorf("failed to scan workspace: %w", err)
 		}
-		
+
 		// Get workspace files
 		wsLoader := wsindex.NewLoader(casStore)
 		workspaceFiles, err := wsLoader.ListAll(wsIndex)
 		if err != nil {
 			return fmt.Errorf("failed to list workspace files: %w", err)
 		}
-		
+
 		fmt.Printf("Found %d files in workspace\n", len(workspaceFiles))
-		
+
 		// Create commit object
 		author := "Ivaldi User <user@example.com>" // TODO: get from config
 		commitObj, err := commitBuilder.CreateCommit(
@@ -297,14 +492,14 @@ var sealCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to create commit: %w", err)
 		}
-		
+
 		// Get commit hash
 		commitHash := commitBuilder.GetCommitHash(commitObj)
-		
+
 		// Update timeline with the commit hash
 		var commitHashArray [32]byte
 		copy(commitHashArray[:], commitHash[:])
-		
+
 		// Update the timeline reference with commit hash
 		err = refsManager.CreateTimeline(
 			currentTimeline,
@@ -356,8 +551,7 @@ func createOrAddExclude(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("Added '%s' to .ivaldiignore\n", pattern)
 	}
-	
+
 	fmt.Printf("Successfully added %d patterns to .ivaldiignore\n", len(args))
 	return nil
 }
-
