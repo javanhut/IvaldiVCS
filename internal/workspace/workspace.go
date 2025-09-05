@@ -27,6 +27,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/hamtdir"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
+	"github.com/javanhut/Ivaldi-vcs/internal/shelf"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
 )
 
@@ -82,16 +83,10 @@ func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
 		}, nil
 	}
 
-	// Try to load workspace index from timeline metadata
-	timeline, err := refsManager.GetTimeline(timelineName, refs.LocalTimeline)
+	// Create workspace index from the actual workspace files (not from timeline state)
+	wsIndex, err := m.ScanWorkspace()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get timeline %s: %w", timelineName, err)
-	}
-
-	// Create workspace index from the timeline's commit
-	wsIndex, err := m.createTargetIndex(*timeline)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create workspace index from timeline: %w", err)
+		return nil, fmt.Errorf("failed to scan workspace: %w", err)
 	}
 
 	return &WorkspaceState{
@@ -170,6 +165,11 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 
 // MaterializeTimeline materializes a timeline's state to the workspace.
 func (m *Materializer) MaterializeTimeline(timelineName string) error {
+	return m.MaterializeTimelineWithAutoShelf(timelineName, true)
+}
+
+// MaterializeTimelineWithAutoShelf materializes a timeline with optional auto-shelving.
+func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, enableAutoShelf bool) error {
 	// Get timeline information
 	refsManager, err := refs.NewRefsManager(m.IvaldiDir)
 	if err != nil {
@@ -188,14 +188,76 @@ func (m *Materializer) MaterializeTimeline(timelineName string) error {
 		return fmt.Errorf("failed to get current workspace state: %w", err)
 	}
 
-	// For now, create target index based on timeline hash
-	// In a full implementation, this would be stored with the timeline
+	// Get current timeline name for auto-shelving
+	currentTimelineName := currentState.TimelineName
+	if currentTimelineName == "" {
+		// If no current timeline, try to get it from refs
+		if currentTL, err := refsManager.GetCurrentTimeline(); err == nil {
+			currentTimelineName = currentTL
+		} else {
+			currentTimelineName = "main" // Default fallback
+		}
+	}
+
+	// Auto-shelf current changes before switching (if enabled and there are changes)
+	if enableAutoShelf && currentTimelineName != timelineName {
+		// Get the base state for the current timeline to compare against
+		baseIndex, err := m.getTimelineBaseIndex(currentTimelineName, refsManager)
+		if err != nil {
+			return fmt.Errorf("failed to get base index for auto-shelving: %w", err)
+		}
+
+		// Check if there are uncommitted changes
+		differ := diffmerge.NewDiffer(m.CAS)
+		diff, err := differ.DiffWorkspaces(baseIndex, currentState.Index)
+		if err != nil {
+			return fmt.Errorf("failed to compute diff for auto-shelving: %w", err)
+		}
+
+		// If there are changes, create an auto-shelf
+		if len(diff.FileChanges) > 0 {
+			shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
+			
+			// Remove any existing auto-shelf for the current timeline first
+			if err := shelfManager.RemoveAutoShelf(currentTimelineName); err != nil {
+				// Log but don't fail - maybe there was no auto-shelf
+			}
+			
+			// Create new auto-shelf
+			autoShelf, err := shelfManager.CreateAutoShelf(currentTimelineName, currentState.Index, baseIndex)
+			if err != nil {
+				return fmt.Errorf("failed to create auto-shelf: %w", err)
+			}
+			
+			fmt.Printf("Auto-shelved %d changes from timeline '%s' (shelf: %s)\n", 
+				len(diff.FileChanges), currentTimelineName, autoShelf.ID)
+		}
+	}
+
+	// Create target index based on timeline hash
 	targetIndex, err := m.createTargetIndex(*timeline)
 	if err != nil {
 		return fmt.Errorf("failed to create target index: %w", err)
 	}
 
-	// Compute differences
+	// Check if there's an auto-shelf for the target timeline to restore
+	if enableAutoShelf {
+		shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
+		autoShelf, err := shelfManager.GetAutoShelf(timelineName)
+		if err == nil && autoShelf != nil {
+			// Use the shelved workspace state instead of the clean timeline state
+			targetIndex = autoShelf.WorkspaceIndex
+			fmt.Printf("Restoring auto-shelved changes for timeline '%s' (shelf: %s)\n", 
+				timelineName, autoShelf.ID)
+			
+			// Remove the auto-shelf since we're applying it
+			if err := shelfManager.RemoveAutoShelf(timelineName); err != nil {
+				fmt.Printf("Warning: failed to remove applied auto-shelf: %v\n", err)
+			}
+		}
+	}
+
+	// Compute differences between current state and target
 	differ := diffmerge.NewDiffer(m.CAS)
 	diff, err := differ.DiffWorkspaces(currentState.Index, targetIndex)
 	if err != nil {
@@ -281,6 +343,19 @@ func (m *Materializer) createTargetIndex(timeline refs.Timeline) (wsindex.IndexR
 	// Build the workspace index
 	return wsBuilder.Build(files)
 }
+
+// getTimelineBaseIndex gets the base workspace index for a timeline (the committed state).
+func (m *Materializer) getTimelineBaseIndex(timelineName string, refsManager *refs.RefsManager) (wsindex.IndexRef, error) {
+	timeline, err := refsManager.GetTimeline(timelineName, refs.LocalTimeline)
+	if err != nil {
+		// If timeline doesn't exist, return empty index
+		wsBuilder := wsindex.NewBuilder(m.CAS)
+		return wsBuilder.Build(nil)
+	}
+	
+	return m.createTargetIndex(*timeline)
+}
+
 
 // getFileRefFromTree extracts the NodeRef for a specific file from the tree.
 func (m *Materializer) getFileRefFromTree(tree *commit.TreeObject, filePath string) (filechunk.NodeRef, error) {

@@ -196,19 +196,8 @@ var switchTimelineCmd = &cobra.Command{
 		
 		materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
 		
-		// Check workspace status
-		status, err := materializer.GetWorkspaceStatus()
-		if err != nil {
-			log.Printf("Warning: Could not check workspace status: %v", err)
-		} else if !status.Clean {
-			fmt.Printf("Warning: You have uncommitted changes:\n")
-			for _, change := range status.ListChanges() {
-				fmt.Printf("  %s\n", change)
-			}
-			fmt.Printf("Consider using 'ivaldi gather' and 'ivaldi seal' to commit them first.\n")
-		}
-		
-		// Materialize the target timeline
+		// Materialize the target timeline with auto-shelving enabled
+		// This will automatically stash uncommitted changes and restore any existing shelf
 		err = materializer.MaterializeTimeline(name)
 		if err != nil {
 			return fmt.Errorf("failed to materialize timeline '%s': %w", name, err)
