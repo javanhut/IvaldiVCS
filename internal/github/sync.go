@@ -60,7 +60,9 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string) e
 	}
 
 	fmt.Printf("Repository: %s\n", repoInfo.FullName)
-	fmt.Printf("Description: %s\n", repoInfo.Description)
+	if repoInfo.Description != "" {
+		fmt.Printf("Description: %s\n", repoInfo.Description)
+	}
 	fmt.Printf("Default branch: %s\n", repoInfo.DefaultBranch)
 
 	// Get the default branch
@@ -74,8 +76,6 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string) e
 	if err != nil {
 		return fmt.Errorf("failed to get repository tree: %w", err)
 	}
-
-	fmt.Printf("Downloading %d files...\n", len(tree.Tree))
 
 	// Download files concurrently
 	err = rs.downloadFiles(ctx, owner, repo, tree, branch.Commit.SHA)
@@ -93,14 +93,73 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string) e
 	return nil
 }
 
-// downloadFiles downloads all files from a GitHub tree
+// downloadFiles downloads all files from a GitHub tree with optimized performance
 func (rs *RepoSyncer) downloadFiles(ctx context.Context, owner, repo string, tree *Tree, ref string) error {
-	// Use a worker pool for concurrent downloads
-	const workers = 8
-	jobs := make(chan TreeEntry, len(tree.Tree))
-	errors := make(chan error, len(tree.Tree))
+	// Filter out files that already exist in CAS
+	var filesToDownload []TreeEntry
+	totalFiles := 0
+	skippedFiles := 0
+
+	for _, entry := range tree.Tree {
+		if entry.Type == "blob" {
+			totalFiles++
+			// Check if we already have this content (by SHA)
+			if entry.SHA != "" {
+				// For delta downloads, check if file already exists
+				// This is a simple optimization - could be enhanced with SHA comparison
+				localPath := filepath.Join(rs.workDir, entry.Path)
+				if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+					// File exists locally, skip download (could compare SHA for better accuracy)
+					skippedFiles++
+					continue
+				}
+			}
+			filesToDownload = append(filesToDownload, entry)
+		}
+	}
+
+	if len(filesToDownload) == 0 {
+		fmt.Printf("All %d files already exist locally, nothing to download\n", totalFiles)
+		return nil
+	}
+
+	fmt.Printf("Downloading %d files (%d already exist locally)...\n", len(filesToDownload), skippedFiles)
+
+	// Dynamic worker count based on number of files
+	workers := 8
+	if len(filesToDownload) > 100 {
+		workers = 16
+	}
+	if len(filesToDownload) > 500 {
+		workers = 32
+	}
+	// Cap at 32 to avoid overwhelming the API
+	if workers > 32 {
+		workers = 32
+	}
+
+	jobs := make(chan TreeEntry, len(filesToDownload))
+	errors := make(chan error, len(filesToDownload))
+	progress := make(chan int, len(filesToDownload))
 
 	var wg sync.WaitGroup
+	var progressWg sync.WaitGroup
+
+	// Progress reporter
+	progressWg.Add(1)
+	go func() {
+		defer progressWg.Done()
+		downloaded := 0
+		for range progress {
+			downloaded++
+			// Update progress every 10 files or at completion
+			if downloaded%10 == 0 || downloaded == len(filesToDownload) {
+				percentage := (downloaded * 100) / len(filesToDownload)
+				fmt.Printf("\rProgress: %d/%d files (%d%%)...", downloaded, len(filesToDownload), percentage)
+			}
+		}
+		fmt.Println() // New line after progress
+	}()
 
 	// Start workers
 	for i := 0; i < workers; i++ {
@@ -110,22 +169,24 @@ func (rs *RepoSyncer) downloadFiles(ctx context.Context, owner, repo string, tre
 			for entry := range jobs {
 				if err := rs.downloadFile(ctx, owner, repo, entry, ref); err != nil {
 					errors <- fmt.Errorf("failed to download %s: %w", entry.Path, err)
+				} else {
+					progress <- 1
 				}
 			}
 		}()
 	}
 
 	// Submit jobs
-	for _, entry := range tree.Tree {
-		if entry.Type == "blob" { // Only download files, not subdirectories
-			jobs <- entry
-		}
+	for _, entry := range filesToDownload {
+		jobs <- entry
 	}
 	close(jobs)
 
 	// Wait for completion
 	wg.Wait()
 	close(errors)
+	close(progress)
+	progressWg.Wait()
 
 	// Check for errors
 	var downloadErrors []error
@@ -134,9 +195,22 @@ func (rs *RepoSyncer) downloadFiles(ctx context.Context, owner, repo string, tre
 	}
 
 	if len(downloadErrors) > 0 {
-		return fmt.Errorf("download errors occurred: %v", downloadErrors[0])
+		fmt.Printf("\nWarning: %d download errors occurred\n", len(downloadErrors))
+		if len(downloadErrors) <= 3 {
+			for _, err := range downloadErrors {
+				fmt.Printf("  - %v\n", err)
+			}
+		} else {
+			// Show first 3 errors
+			for i := 0; i < 3; i++ {
+				fmt.Printf("  - %v\n", downloadErrors[i])
+			}
+			fmt.Printf("  ... and %d more errors\n", len(downloadErrors)-3)
+		}
+		return fmt.Errorf("failed to download %d files", len(downloadErrors))
 	}
 
+	fmt.Printf("Successfully downloaded %d files\n", len(filesToDownload))
 	return nil
 }
 
@@ -167,7 +241,13 @@ func (rs *RepoSyncer) downloadFile(ctx context.Context, owner, repo string, entr
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	fmt.Printf("Downloaded: %s\n", entry.Path)
+	// Store in CAS for deduplication
+	hash := cas.SumB3(content)
+	if err := rs.casStore.Put(hash, content); err != nil {
+		// Non-fatal, file is already written to disk
+	}
+
+	// No verbose output per file
 	return nil
 }
 
@@ -399,24 +479,46 @@ func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineNa
 		return fmt.Errorf("failed to get tree: %w", err)
 	}
 
-	// Download all files for this timeline
+	fmt.Printf("Branch SHA: %s, Total files: %d\n", branchInfo.Commit.SHA[:7], len(tree.Tree))
+
+	// TEMPORARY SOLUTION: Create a temporary workspace for this timeline
+	// In the future, we should implement proper timeline isolation
+	tempDir := filepath.Join(rs.ivaldiDir, "harvest_temp", timelineName)
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir) // Clean up temp directory
+
+	// Save current working directory
+	originalWorkDir := rs.workDir
+
+	// Temporarily change workspace to temp directory
+	rs.workDir = tempDir
+
+	// Download all files for this timeline to temp directory
 	err = rs.downloadFiles(ctx, owner, repo, tree, branchInfo.Commit.SHA)
 	if err != nil {
+		rs.workDir = originalWorkDir // Restore original workspace
 		return fmt.Errorf("failed to download files: %w", err)
 	}
 
-	// Create workspace index
+	// Create workspace index from temp directory
 	materializer := workspace.NewMaterializer(rs.casStore, rs.ivaldiDir, rs.workDir)
 	wsIndex, err := materializer.ScanWorkspace()
 	if err != nil {
+		rs.workDir = originalWorkDir
 		return fmt.Errorf("failed to scan workspace: %w", err)
 	}
 
 	wsLoader := wsindex.NewLoader(rs.casStore)
 	workspaceFiles, err := wsLoader.ListAll(wsIndex)
 	if err != nil {
+		rs.workDir = originalWorkDir
 		return fmt.Errorf("failed to list workspace files: %w", err)
 	}
+
+	// Restore original workspace
+	rs.workDir = originalWorkDir
 
 	// Create persistent MMR
 	mmr, err := history.NewPersistentMMR(rs.casStore, rs.ivaldiDir)
@@ -481,6 +583,6 @@ func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineNa
 		// Remote timeline might not exist, that's okay
 	}
 
-	fmt.Printf("Successfully harvested timeline '%s'\n", timelineName)
+	fmt.Printf("Successfully harvested timeline '%s' (workspace preserved)\n", timelineName)
 	return nil
 }

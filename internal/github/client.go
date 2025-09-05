@@ -410,7 +410,27 @@ func (c *Client) GetTree(ctx context.Context, owner, repo, sha string, recursive
 
 // DownloadFile downloads raw file content
 func (c *Client) DownloadFile(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
-	// Use raw content endpoint
+	// Try using download_url first if available (faster, no base64 decoding needed)
+	// This is a direct raw content URL that doesn't count against API rate limits
+
+	// First try the raw content endpoint (doesn't count against API rate limit)
+	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, ref, path)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	if err == nil {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+
+		resp, err := c.httpClient.Do(req)
+		if err == nil && resp.StatusCode == 200 {
+			defer resp.Body.Close()
+			return io.ReadAll(resp.Body)
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}
+
+	// Fallback to API endpoint
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 	if ref != "" {
 		apiPath += fmt.Sprintf("?ref=%s", ref)
@@ -427,7 +447,21 @@ func (c *Client) DownloadFile(ctx context.Context, owner, repo, path, ref string
 		return nil, fmt.Errorf("failed to decode file content: %w", err)
 	}
 
-	// Decode base64 content
+	// Use download_url if available
+	if content.DownloadURL != "" {
+		req, err := http.NewRequestWithContext(ctx, "GET", content.DownloadURL, nil)
+		if err == nil {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+
+			resp, err := c.httpClient.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				return io.ReadAll(resp.Body)
+			}
+		}
+	}
+
+	// Decode base64 content as last resort
 	if content.Encoding == "base64" {
 		decoded, err := base64.StdEncoding.DecodeString(content.Content)
 		if err != nil {
