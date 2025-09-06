@@ -231,15 +231,14 @@ All formats can optionally include the `.git` suffix.
 
 ### When to Use Ivaldi GitHub Integration
 
-✅ **Good for:**
-- Cloning repositories without installing Git
-- Working with small to medium repositories
-- Quick file downloads
-- Environments where Git cannot be installed
-- Automated workflows using GitHub API
-- Read-heavy operations
+**Good for:**
+- Small to medium repositories (< 1GB)
+- Projects with frequent updates
+- Teams using GitHub as primary host
+- CI/CD pipelines
+- Repositories with standard Git workflow
 
-❌ **Consider alternatives for:**
+**Consider alternatives for:**
 - Very large repositories (>1GB)
 - Repositories with many large binary files
 - High-frequency push operations

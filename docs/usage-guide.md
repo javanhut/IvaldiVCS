@@ -49,13 +49,24 @@ If you're in an existing Git repository, `ivaldi forge` automatically:
 ```bash
 # View current timeline and file changes
 ivaldi status
+
+# Get detailed information about current timeline
+ivaldi whereami
+# or short form:
+ivaldi wai
 ```
 
-Output shows:
+**Status** shows:
 - Current timeline (branch)
 - Modified files
 - Staged files
 - Untracked files
+
+**Whereami** shows:
+- Timeline name and type
+- Last commit hash and message
+- Remote sync status
+- Workspace status summary
 
 ### 2. Stage Files (Gather)
 
@@ -217,6 +228,7 @@ dist/
 |---------|-------------|
 | `ivaldi forge` | Initialize new repository |
 | `ivaldi status` | Show working directory status |
+| `ivaldi whereami` or `ivaldi wai` | Show current timeline details |
 
 ### File Operations
 
@@ -251,10 +263,26 @@ dist/
 ### Feature Development
 
 ```bash
+# Check where you are
+ivaldi whereami
+# Output: Timeline: main
+#         Type: Local Timeline
+#         Last Commit: a1b2c3d4 (2 hours ago)
+#         Message: "Initial commit"
+#         Remote: owner/repo (up to date)
+#         Workspace: Clean
+
 # Start new feature
 ivaldi timeline create feature-login
 ivaldi gather src/auth.js src/login.js
 ivaldi seal "Implement login functionality"
+
+# Check your progress
+ivaldi wai
+# Output: Timeline: feature-login
+#         Last Commit: e5f6g7h8 (just now)
+#         Message: "Implement login functionality"
+#         Workspace: Clean
 
 # Switch back to main
 ivaldi timeline switch main

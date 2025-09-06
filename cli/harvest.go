@@ -107,12 +107,12 @@ Examples:
 		failed := 0
 
 		for _, timelineName := range timelinesToHarvest {
-			fmt.Printf("\n📦 Harvesting timeline: %s\n", timelineName)
+			fmt.Printf("\nHarvesting timeline: %s\n", timelineName)
 
 			// Check if timeline exists locally (for update case)
 			localExists := refsManager.TimelineExists(timelineName, refs.LocalTimeline)
 			if localExists && !harvestUpdateFlag && len(args) == 0 {
-				fmt.Printf("⚠️  Timeline '%s' already exists locally, skipping (use --update to force)\n", timelineName)
+				fmt.Printf("Timeline '%s' already exists locally, skipping (use --update to force)\n", timelineName)
 				continue
 			}
 
@@ -128,7 +128,7 @@ Examples:
 
 			err := syncer.FetchTimeline(ctx, owner, repo, timelineName)
 			if err != nil {
-				fmt.Printf("❌ Failed to harvest timeline '%s': %v\n", timelineName, err)
+				fmt.Printf("Failed to harvest timeline '%s': %v\n", timelineName, err)
 				failed++
 
 				// Clean up any partial state
@@ -143,22 +143,22 @@ Examples:
 			}
 
 			if localExists {
-				fmt.Printf("✅ Updated timeline: %s\n", timelineName)
+				fmt.Printf("Updated timeline: %s\n", timelineName)
 			} else {
-				fmt.Printf("✅ Harvested new timeline: %s\n", timelineName)
+				fmt.Printf("Harvested new timeline: %s\n", timelineName)
 			}
 			successful++
 		}
 
 		// Summary
-		fmt.Printf("\n📊 Harvest Summary:\n")
+		fmt.Printf("\nHarvest Summary:\n")
 		fmt.Printf("  • Successfully harvested: %d timelines\n", successful)
 		if failed > 0 {
 			fmt.Printf("  • Failed to harvest: %d timelines\n", failed)
 		}
 
 		if successful > 0 {
-			fmt.Printf("\n💡 Next steps:\n")
+			fmt.Printf("\nNext steps:\n")
 			if len(timelinesToHarvest) == 1 {
 				fmt.Printf("  • Use 'ivaldi timeline switch %s' to switch to the harvested timeline\n", timelinesToHarvest[0])
 			} else {
@@ -169,7 +169,7 @@ Examples:
 
 		// If we harvested successfully but there were failures, return an error code
 		if successful > 0 && failed > 0 {
-			fmt.Printf("\n⚠️  Some timelines failed to harvest. Check the errors above.\n")
+			fmt.Printf("\nSome timelines failed to harvest. Check the errors above.\n")
 		} else if failed > 0 {
 			return fmt.Errorf("failed to harvest %d timeline(s)", failed)
 		}

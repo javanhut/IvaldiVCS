@@ -30,33 +30,33 @@ ivaldi scout --refresh
 ```
 
 **What it shows:**
-- 🆕 **New timelines** - Available on remote but not harvested locally
-- ✅ **Existing timelines** - Available both locally and remotely  
-- 📱 **Local-only timelines** - Exist locally but not on remote
-- 📊 **Summary statistics** - Overview of timeline status
+- **New timelines** - Available on remote but not harvested locally
+- **Existing timelines** - Available both locally and remotely  
+- **Local-only timelines** - Exist locally but not on remote
+- **Summary statistics** - Overview of timeline status
 
 **Example Output:**
 ```
 Scouting GitHub repository: owner/awesome-project
 
-📡 Remote Timelines:
-  🆕 feature-auth        (new, ready to harvest)
-  🆕 bugfix-database     (new, ready to harvest)
-  🆕 experimental-ui     (new, ready to harvest)
+Remote Timelines:
+  feature-auth        (new, ready to harvest)
+  bugfix-database     (new, ready to harvest)
+  experimental-ui     (new, ready to harvest)
 
-🏠 Local Timelines:
-  ✅ main                (exists locally and remotely)
-  ✅ develop             (exists locally and remotely)
-  📱 local-experiment    (local only, not on remote)
+Local Timelines:
+  main                (exists locally and remotely)
+  develop             (exists locally and remotely)
+  local-experiment    (local only, not on remote)
 
-📊 Summary:
+Summary:
   • Current timeline: main
   • Remote timelines available to harvest: 3
   • Timelines that exist both locally and remotely: 2
   • Local-only timelines: 1
   • Total remote timelines discovered: 5
 
-💡 Next steps:
+Next steps:
   • Use 'ivaldi harvest <timeline-name>' to download specific timelines
   • Use 'ivaldi harvest' to download all new timelines
 ```
@@ -89,20 +89,20 @@ ivaldi harvest --update
 Harvesting from GitHub repository: owner/awesome-project
 Discovering remote timelines...
 
-📦 Harvesting timeline: feature-auth
+Harvesting timeline: feature-auth
 Fetching timeline 'feature-auth' from owner/awesome-project...
 Downloaded 23 files
-✅ Harvested new timeline: feature-auth
+Harvested new timeline: feature-auth
 
-📦 Harvesting timeline: bugfix-database
+Harvesting timeline: bugfix-database
 Fetching timeline 'bugfix-database' from owner/awesome-project...
 Downloaded 15 files
-✅ Harvested new timeline: bugfix-database
+Harvested new timeline: bugfix-database
 
-📊 Harvest Summary:
+Harvest Summary:
   • Successfully harvested: 2 timelines
 
-💡 Next steps:
+Next steps:
   • Use 'ivaldi timeline list' to see all available timelines
   • Use 'ivaldi timeline switch <name>' to switch to a harvested timeline
 ```
@@ -307,8 +307,8 @@ Error: context deadline exceeded
 
 ### Timeline Conflicts
 ```bash
-$ ivaldi harvest main
-⚠️  Timeline 'main' already exists locally, skipping (use --update to force)
+$ ivaldi harvest
+Timeline 'main' already exists locally, skipping (use --update to force)
 
 # Solution: Use --update flag to update existing timelines
 ivaldi harvest --update main
@@ -317,8 +317,18 @@ ivaldi harvest --update main
 ### Partial Harvest Failures
 ```bash
 $ ivaldi harvest feature-a feature-b
-✅ Harvested new timeline: feature-a
-❌ Failed to harvest timeline 'feature-b': branch not found
+Harvested new timeline: feature-a
+Failed to harvest timeline 'feature-b': branch not found
+
+# Solution: Check branch exists with scout first
+ivaldi scout
+```
+
+### Partial Harvest Failures
+```bash
+$ ivaldi harvest feature-a feature-b
+Harvested new timeline: feature-a
+Failed to harvest timeline 'feature-b': branch not found
 
 # Solution: Check branch exists with scout first
 ivaldi scout

@@ -42,6 +42,7 @@ func init() {
 	rootCmd.AddCommand(gatherCmd)
 	rootCmd.AddCommand(sealCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(whereamiCmd)
 	rootCmd.AddCommand(excludeCommand)
 
 	// Remote repository commands (now with GitHub integration)

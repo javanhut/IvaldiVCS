@@ -31,7 +31,7 @@ install: build
 	@echo "Installing $(BINARY_NAME) to $(INSTALL_DIR)..."
 	@sudo cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/
 	@sudo chmod +x $(INSTALL_DIR)/$(BINARY_NAME)
-	@echo "✅ $(BINARY_NAME) installed to $(INSTALL_DIR)/$(BINARY_NAME)"
+	@echo "$(BINARY_NAME) installed to $(INSTALL_DIR)/$(BINARY_NAME)"
 	@echo "You can now use: $(BINARY_NAME) --help"
 
 # Uninstall the binary
@@ -39,14 +39,14 @@ install: build
 uninstall:
 	@echo "Removing $(BINARY_NAME) from $(INSTALL_DIR)..."
 	@sudo rm -f $(INSTALL_DIR)/$(BINARY_NAME)
-	@echo "✅ $(BINARY_NAME) uninstalled"
+	@echo "$(BINARY_NAME) uninstalled"
 
 # Clean build artifacts
 .PHONY: clean
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
-	@echo "✅ Build directory cleaned"
+	@echo "Build directory cleaned"
 
 # Test the application
 .PHONY: test
@@ -88,10 +88,10 @@ run: dev
 .PHONY: check
 check:
 	@if [ -f "$(INSTALL_DIR)/$(BINARY_NAME)" ]; then \
-		echo "✅ $(BINARY_NAME) is installed at $(INSTALL_DIR)/$(BINARY_NAME)"; \
+		echo "$(BINARY_NAME) is installed at $(INSTALL_DIR)/$(BINARY_NAME)"; \
 		$(INSTALL_DIR)/$(BINARY_NAME) --help | head -3; \
 	else \
-		echo "❌ $(BINARY_NAME) is not installed"; \
+		echo "$(BINARY_NAME) is not installed"; \
 		echo "Run 'make install' to install it"; \
 	fi
 

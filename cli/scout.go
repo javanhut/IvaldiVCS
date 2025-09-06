@@ -64,6 +64,12 @@ Examples:
 			return fmt.Errorf("failed to get remote timelines: %w", err)
 		}
 
+		// Get current timeline
+		currentTimeline, err := refsManager.GetCurrentTimeline()
+		if err != nil {
+			currentTimeline = "(unknown)"
+		}
+
 		// Get sync statuses
 		syncStatuses, err := refsManager.GetTimelineSyncStatuses()
 		if err != nil {
@@ -80,37 +86,28 @@ Examples:
 		localOnlyCount := 0
 		bothCount := 0
 
-		fmt.Println("📡 Remote Timelines:")
+		fmt.Println("Remote Timelines:")
 		for _, status := range syncStatuses {
-			switch status.Status {
-			case "remote-only":
-				fmt.Printf("  🆕 %-20s (new, ready to harvest)\n", status.Name)
+			if status.Status == "remote-only" {
+				fmt.Printf("  %-20s (new, ready to harvest)\n", status.Name)
 				remoteOnlyCount++
-			case "needs-comparison", "local-only":
-				continue // We'll show these in separate sections
 			}
 		}
 
-		fmt.Println("\n🏠 Local Timelines:")
+		fmt.Println("\nLocal Timelines:")
 		for _, status := range syncStatuses {
-			switch status.Status {
-			case "needs-comparison":
-				fmt.Printf("  ✅ %-20s (exists locally and remotely)\n", status.Name)
-				bothCount++
-			case "local-only":
-				fmt.Printf("  📱 %-20s (local only, not on remote)\n", status.Name)
-				localOnlyCount++
+			if status.LocalExists {
+				if status.RemoteExists {
+					fmt.Printf("  %-20s (exists locally and remotely)\n", status.Name)
+					bothCount++
+				} else {
+					fmt.Printf("  %-20s (local only, not on remote)\n", status.Name)
+					localOnlyCount++
+				}
 			}
 		}
 
-		// Get current timeline for context
-		currentTimeline, err := refsManager.GetCurrentTimeline()
-		if err != nil {
-			currentTimeline = "unknown"
-		}
-
-		// Summary
-		fmt.Println("\n📊 Summary:")
+		fmt.Println("\nSummary:")
 		fmt.Printf("  • Current timeline: %s\n", currentTimeline)
 		fmt.Printf("  • Remote timelines available to harvest: %d\n", remoteOnlyCount)
 		fmt.Printf("  • Timelines that exist both locally and remotely: %d\n", bothCount)
@@ -119,11 +116,11 @@ Examples:
 
 		// Helpful next steps
 		if remoteOnlyCount > 0 {
-			fmt.Println("\n💡 Next steps:")
+			fmt.Println("\nNext steps:")
 			fmt.Println("  • Use 'ivaldi harvest <timeline-name>' to download specific timelines")
 			fmt.Println("  • Use 'ivaldi harvest' to download all new timelines")
 		} else {
-			fmt.Println("\n✨ All remote timelines are already available locally!")
+			fmt.Println("\nAll remote timelines are already available locally!")
 		}
 
 		return nil

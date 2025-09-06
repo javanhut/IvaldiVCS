@@ -88,6 +88,7 @@ Remote operations are designed for selective collaboration:
 - **[Architecture](docs/architecture.md)**: Technical details about how Ivaldi works
 - **[Scout & Harvest](docs/scout-harvest.md)**: Remote timeline operations
 - **[Timeline Branching](docs/timeline-branching.md)**: Advanced branching features
+- **[Whereami Command](docs/whereami-command.md)**: Current timeline information
 - **[GitHub Integration](docs/github-integration.md)**: GitHub synchronization
 - **[Portal Commands](docs/portal-commands.md)**: Repository connection management
 
@@ -97,6 +98,7 @@ Remote operations are designed for selective collaboration:
 ```bash
 ivaldi forge                    # Initialize repository
 ivaldi status                   # Show working directory status
+ivaldi whereami                 # Show current timeline details (alias: wai)
 ```
 
 ### File Operations
