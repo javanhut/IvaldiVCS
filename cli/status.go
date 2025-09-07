@@ -350,7 +350,15 @@ func getStagedFiles(ivaldiDir string) ([]string, error) {
 		return nil, err
 	}
 
-	files := strings.Fields(string(data))
+	// Split by newlines and filter out empty strings
+	lines := strings.Split(string(data), "\n")
+	var files []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
 	return files, nil
 }
 

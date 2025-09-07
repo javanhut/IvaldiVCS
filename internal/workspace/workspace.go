@@ -240,7 +240,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	// This takes priority over the committed timeline state
 	var targetIndex wsindex.IndexRef
 	var hasAutoShelf bool
-	
+
 	if enableAutoShelf {
 		shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
 		autoShelf, err := shelfManager.GetAutoShelf(timelineName)
@@ -251,13 +251,18 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 			fmt.Printf("Restoring auto-shelved changes for timeline '%s' (shelf: %s)\n",
 				timelineName, autoShelf.ID)
 
+			// Restore staged files if any
+			if err := shelfManager.RestoreStagedFiles(autoShelf); err != nil {
+				fmt.Printf("Warning: failed to restore staged files: %v\n", err)
+			}
+
 			// Remove the auto-shelf since we're applying it
 			if err := shelfManager.RemoveAutoShelf(timelineName); err != nil {
 				fmt.Printf("Warning: failed to remove applied auto-shelf: %v\n", err)
 			}
 		}
 	}
-	
+
 	// Only create target index from timeline commit if we don't have an autoshelf
 	if !hasAutoShelf {
 		var err error

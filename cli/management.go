@@ -367,13 +367,63 @@ var gatherCmd = &cobra.Command{
 			}
 		} else {
 			// Use specified files
-			for _, file := range args {
-				// Check if file exists
-				if _, err := os.Stat(file); os.IsNotExist(err) {
-					log.Printf("Warning: File '%s' does not exist, skipping", file)
+			for _, arg := range args {
+				// Convert relative paths to absolute for consistency
+				absPath := arg
+				if !filepath.IsAbs(arg) {
+					absPath = filepath.Join(workDir, arg)
+				}
+
+				info, err := os.Stat(absPath)
+				if os.IsNotExist(err) {
+					log.Printf("Warning: File '%s' does not exist, skipping", arg)
 					continue
 				}
-				filesToGather = append(filesToGather, file)
+
+				if info.IsDir() {
+					// If it's a directory, walk it and add all files
+					err := filepath.Walk(absPath, func(path string, info os.FileInfo, err error) error {
+						if err != nil {
+							return err
+						}
+
+						// Skip directories
+						if info.IsDir() {
+							return nil
+						}
+
+						// Skip hidden files and directories
+						if strings.Contains(path, "/.") {
+							return nil
+						}
+
+						// Get relative path from working directory
+						relPath, err := filepath.Rel(workDir, path)
+						if err != nil {
+							return err
+						}
+
+						// Skip .ivaldi directory
+						if strings.HasPrefix(relPath, ".ivaldi") {
+							return nil
+						}
+
+						filesToGather = append(filesToGather, relPath)
+						return nil
+					})
+					if err != nil {
+						log.Printf("Warning: Failed to walk directory '%s': %v", arg, err)
+					}
+				} else {
+					// It's a file, get relative path
+					relPath, err := filepath.Rel(workDir, arg)
+					if err != nil {
+						// If we can't get relative path, use as-is
+						filesToGather = append(filesToGather, arg)
+					} else {
+						filesToGather = append(filesToGather, relPath)
+					}
+				}
 			}
 		}
 
@@ -382,22 +432,52 @@ var gatherCmd = &cobra.Command{
 			return nil
 		}
 
-		// Write staged files list
+		// Read existing staged files
 		stageFile := filepath.Join(stageDir, "files")
+		existingStaged := make(map[string]bool)
+		if data, err := os.ReadFile(stageFile); err == nil {
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					existingStaged[line] = true
+				}
+			}
+		}
+
+		// Add new files to staging
+		for _, file := range filesToGather {
+			existingStaged[file] = true
+		}
+
+		// Write all staged files
 		f, err := os.Create(stageFile)
 		if err != nil {
 			return fmt.Errorf("failed to create stage file: %w", err)
 		}
 		defer f.Close()
 
-		for _, file := range filesToGather {
+		stagedCount := 0
+		for file := range existingStaged {
 			if _, err := f.WriteString(file + "\n"); err != nil {
 				return fmt.Errorf("failed to write to stage file: %w", err)
 			}
-			fmt.Printf("Gathered: %s\n", file)
+			// Only print for newly gathered files
+			found := false
+			for _, newFile := range filesToGather {
+				if newFile == file {
+					fmt.Printf("Gathered: %s\n", file)
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.Printf("Already staged: %s\n", file)
+			}
+			stagedCount++
 		}
 
-		fmt.Printf("Successfully gathered %d files for staging.\n", len(filesToGather))
+		fmt.Printf("Successfully gathered %d files for staging (total staged: %d).\n", len(filesToGather), stagedCount)
 		fmt.Println("Use 'ivaldi seal <message>' to create a commit with these files.")
 
 		return nil
