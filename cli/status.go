@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/javanhut/Ivaldi-vcs/internal/cas"
+	"github.com/javanhut/Ivaldi-vcs/internal/colors"
+	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/objects"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/spf13/cobra"
@@ -18,13 +21,13 @@ import (
 type FileStatus int
 
 const (
-	StatusUnknown FileStatus = iota
-	StatusUntracked         // File exists but not in any previous commit
-	StatusAdded             // File is staged for commit (new file)
-	StatusModified          // File is modified from last commit
-	StatusDeleted           // File was deleted from working directory
-	StatusStaged            // File is staged for commit (modified)
-	StatusIgnored           // File is ignored by .ivaldiignore
+	StatusUnknown   FileStatus = iota
+	StatusUntracked            // File exists but not in any previous commit
+	StatusAdded                // File is staged for commit (new file)
+	StatusModified             // File is modified from last commit
+	StatusDeleted              // File was deleted from working directory
+	StatusStaged               // File is staged for commit (modified)
+	StatusIgnored              // File is ignored by .ivaldiignore
 )
 
 // FileStatusInfo holds information about a file's status
@@ -77,10 +80,16 @@ var statusCmd = &cobra.Command{
 		}
 
 		// Display status
-		fmt.Printf("On timeline %s\n", currentTimeline)
-		
+		fmt.Printf("On timeline %s\n", colors.Bold(currentTimeline))
+
+		// Show information about the last seal if available
+		err = displayLastSealInfo(refsManager, currentTimeline, ivaldiDir)
+		if err != nil {
+			// Don't fail if we can't get seal info
+		}
+
 		if len(fileStatuses) == 0 {
-			fmt.Println("Working directory clean")
+			fmt.Println(colors.SuccessText("Working directory clean"))
 			return nil
 		}
 
@@ -108,41 +117,63 @@ var statusCmd = &cobra.Command{
 
 		// Display staged files
 		if len(staged) > 0 {
-			fmt.Println("\nFiles staged for seal:")
+			fmt.Printf("\n%s\n", colors.SectionHeader("Files staged for seal:"))
 			for _, file := range staged {
 				if file.Status == StatusAdded {
-					fmt.Printf("  new file:   %s\n", file.Path)
+					fmt.Printf("  %s   %s\n", colors.Added("new file:"), colors.Green(file.Path))
 				} else {
-					fmt.Printf("  modified:   %s\n", file.Path)
+					fmt.Printf("  %s   %s\n", colors.Staged("modified:"), colors.Blue(file.Path))
 				}
 			}
 		}
 
 		// Display modified files
 		if len(modified) > 0 {
-			fmt.Println("\nFiles not staged for seal:")
-			fmt.Println("  (use \"ivaldi gather <file>...\" to stage for seal)")
+			fmt.Printf("\n%s\n", colors.SectionHeader("Files not staged for seal:"))
+			fmt.Printf("  %s\n", colors.Dim("(use \"ivaldi gather <file>...\" to stage for seal)"))
 			for _, file := range modified {
-				fmt.Printf("  modified:   %s\n", file.Path)
+				fmt.Printf("  %s   %s\n", colors.Modified("modified:"), colors.Blue(file.Path))
 			}
 		}
 
 		// Display deleted files
 		if len(deleted) > 0 {
-			fmt.Println("\nDeleted files:")
-			fmt.Println("  (use \"ivaldi gather <file>...\" to stage deletion)")
+			fmt.Printf("\n%s\n", colors.SectionHeader("Deleted files:"))
+			fmt.Printf("  %s\n", colors.Dim("(use \"ivaldi gather <file>...\" to stage deletion)"))
 			for _, file := range deleted {
-				fmt.Printf("  deleted:    %s\n", file.Path)
+				fmt.Printf("  %s    %s\n", colors.Deleted("deleted:"), colors.Red(file.Path))
 			}
 		}
 
 		// Display untracked files
 		if len(untracked) > 0 {
-			fmt.Println("\nUntracked files:")
-			fmt.Println("  (use \"ivaldi gather <file>...\" to include in what will be sealed)")
+			fmt.Printf("\n%s\n", colors.SectionHeader("Untracked files:"))
+			fmt.Printf("  %s\n", colors.Dim("(use \"ivaldi gather <file>...\" to include in what will be sealed)"))
 			for _, file := range untracked {
-				fmt.Printf("  %s\n", file.Path)
+				fmt.Printf("  %s\n", colors.Yellow(file.Path))
 			}
+		}
+
+		// Display a summary
+		fmt.Printf("\n%s ", colors.SectionHeader("Status summary:"))
+		var parts []string
+		if len(staged) > 0 {
+			parts = append(parts, colors.Green(fmt.Sprintf("%d staged", len(staged))))
+		}
+		if len(modified) > 0 {
+			parts = append(parts, colors.Blue(fmt.Sprintf("%d modified", len(modified))))
+		}
+		if len(untracked) > 0 {
+			parts = append(parts, colors.Yellow(fmt.Sprintf("%d untracked", len(untracked))))
+		}
+		if len(deleted) > 0 {
+			parts = append(parts, colors.Red(fmt.Sprintf("%d deleted", len(deleted))))
+		}
+
+		if len(parts) > 0 {
+			fmt.Printf("%s\n", strings.Join(parts, ", "))
+		} else {
+			fmt.Printf("%s\n", colors.SuccessText("clean"))
 		}
 
 		// Display ignored files (only if verbose flag is set)
@@ -348,46 +379,70 @@ func loadIgnorePatterns(workDir string) ([]string, error) {
 	return patterns, scanner.Err()
 }
 
-// getKnownFiles returns a map of files from the last snapshot with their BLAKE3 hashes
+// getKnownFiles reads files from the last commit/seal for proper status tracking
 func getKnownFiles(ivaldiDir string) (map[string][32]byte, error) {
 	knownFiles := make(map[string][32]byte)
-	
-	// Create a snapshot file to track known files
-	// In a full implementation, this would come from the last commit/tree object
-	snapshotFile := filepath.Join(ivaldiDir, "last_snapshot")
-	if _, err := os.Stat(snapshotFile); os.IsNotExist(err) {
-		return knownFiles, nil // No previous snapshot
-	}
 
-	data, err := os.ReadFile(snapshotFile)
+	// Get the current timeline and its last commit
+	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
-		return knownFiles, nil // Can't read snapshot, treat as empty
+		return knownFiles, nil // No refs system, treat as empty
+	}
+	defer refsManager.Close()
+
+	currentTimeline, err := refsManager.GetCurrentTimeline()
+	if err != nil {
+		return knownFiles, nil // No current timeline
 	}
 
-	// Parse snapshot format: "path:hash\n"
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
+	if err != nil {
+		return knownFiles, nil // Timeline doesn't exist
+	}
+
+	// If timeline has no commits (empty hash), return empty
+	if timeline.Blake3Hash == [32]byte{} {
+		return knownFiles, nil
+	}
+
+	// Initialize CAS to read commit
+	objectsDir := filepath.Join(ivaldiDir, "objects")
+	casStore, err := cas.NewFileCAS(objectsDir)
+	if err != nil {
+		return knownFiles, nil // Can't initialize CAS
+	}
+
+	// Read the commit object
+	var commitHash cas.Hash
+	copy(commitHash[:], timeline.Blake3Hash[:])
+
+	commitReader := commit.NewCommitReader(casStore)
+	commitObj, err := commitReader.ReadCommit(commitHash)
+	if err != nil {
+		return knownFiles, nil // Can't read commit
+	}
+
+	// Read the tree structure
+	tree, err := commitReader.ReadTree(commitObj)
+	if err != nil {
+		return knownFiles, nil // Can't read tree
+	}
+
+	// List all files in the commit
+	filePaths, err := commitReader.ListFiles(tree)
+	if err != nil {
+		return knownFiles, nil // Can't list files
+	}
+
+	// For each file, get its content and compute hash
+	for _, filePath := range filePaths {
+		content, err := commitReader.GetFileContent(tree, filePath)
+		if err != nil {
+			continue // Skip files we can't read
 		}
 
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		filePath := parts[0]
-		hashHex := parts[1]
-
-		// Decode hex hash
-		hashBytes, err := hex.DecodeString(hashHex)
-		if err != nil || len(hashBytes) != 32 {
-			continue
-		}
-
-		var hash [32]byte
-		copy(hash[:], hashBytes)
+		// Compute BLAKE3 hash of content
+		hash := objects.HashBlobBLAKE3(content)
 		knownFiles[filePath] = hash
 	}
 
@@ -404,10 +459,45 @@ func computeFileHash(filePath string) ([32]byte, error) {
 	return objects.HashBlobBLAKE3(content), nil
 }
 
+// displayLastSealInfo shows information about the last seal and its contents
+func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline, ivaldiDir string) error {
+	timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
+	if err != nil {
+		return err
+	}
+
+	// If timeline has no commits, don't show anything
+	if timeline.Blake3Hash == [32]byte{} {
+		return nil
+	}
+
+	// Try to get seal name
+	sealName, err := refsManager.GetSealNameByHash(timeline.Blake3Hash)
+	if err == nil && sealName != "" {
+		fmt.Printf("Last seal: %s\n", colors.Cyan(sealName))
+	} else {
+		// Fallback to short hash
+		shortHash := hex.EncodeToString(timeline.Blake3Hash[:])[:8]
+		fmt.Printf("Last seal: %s\n", colors.Cyan(shortHash))
+	}
+
+	// Get files from the last commit
+	knownFiles, err := getKnownFiles(ivaldiDir)
+	if err != nil {
+		return err
+	}
+
+	if len(knownFiles) > 0 {
+		fmt.Printf("Files tracked in last seal: %s\n", colors.InfoText(fmt.Sprintf("%d", len(knownFiles))))
+	}
+
+	return nil
+}
+
 // isIgnored checks if a file path matches any ignore patterns
 func isIgnored(path string, patterns []string) bool {
 	for _, pattern := range patterns {
-		// Simple pattern matching - in a full implementation, 
+		// Simple pattern matching - in a full implementation,
 		// this would support full glob patterns
 		if matched, _ := filepath.Match(pattern, path); matched {
 			return true

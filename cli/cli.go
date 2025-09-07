@@ -41,6 +41,7 @@ func init() {
 	// File and commit management commands
 	rootCmd.AddCommand(gatherCmd)
 	rootCmd.AddCommand(sealCmd)
+	rootCmd.AddCommand(sealsCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(whereamiCmd)
 	rootCmd.AddCommand(excludeCommand)

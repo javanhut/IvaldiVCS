@@ -64,7 +64,7 @@ ivaldi wai
 
 **Whereami** shows:
 - Timeline name and type
-- Last commit hash and message
+- Last seal with human-friendly name (e.g., "swift-eagle-flies-high-447abe9b")
 - Remote sync status
 - Workspace status summary
 
@@ -84,8 +84,18 @@ ivaldi gather
 ### 3. Create Commit (Seal)
 
 ```bash
-# Commit staged files with a message
+# Commit staged files with a message (generates unique seal name)
 ivaldi seal "Add new feature"
+# Output: Created seal: swift-eagle-flies-high-447abe9b (447abe9b)
+
+# List all seals with their names
+ivaldi seals list
+
+# Show detailed information about a seal
+ivaldi seals show swift-eagle-flies-high-447abe9b
+# Or use partial matching:
+ivaldi seals show swift-eagle
+ivaldi seals show 447a
 ```
 
 ### 4. View History
@@ -235,7 +245,9 @@ dist/
 | Command | Description |
 |---------|-------------|
 | `ivaldi gather [files...]` | Stage files for commit |
-| `ivaldi seal <message>` | Create commit with staged files |
+| `ivaldi seal <message>` | Create commit with auto-generated seal name |
+| `ivaldi seals list` | List all seals with their names |
+| `ivaldi seals show <name\|hash>` | Show detailed seal information |
 
 ### Timeline Operations
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -509,4 +510,134 @@ func (rm *RefsManager) importGitRef(gitRefPath, name string, timelineType Timeli
 
 	description := fmt.Sprintf("Imported from Git ref: %s", gitSHA1)
 	return rm.CreateTimeline(name, timelineType, blake3Hash, sha256Hash, gitSHA1, description)
+}
+
+// Seal name management functions
+
+// StoreSealName stores a seal name mapping to its hash
+func (rm *RefsManager) StoreSealName(sealName string, hash [32]byte, message string) error {
+	sealsDir := filepath.Join(rm.refsDir, "seals")
+	if err := os.MkdirAll(sealsDir, 0755); err != nil {
+		return fmt.Errorf("create seals directory: %w", err)
+	}
+
+	// Store seal name -> hash mapping
+	sealPath := filepath.Join(sealsDir, sealName)
+	hashHex := hex.EncodeToString(hash[:])
+	timestamp := time.Now().Unix()
+
+	// Format: hash_hex timestamp message
+	content := fmt.Sprintf("%s %d %s\n", hashHex, timestamp, message)
+
+	return os.WriteFile(sealPath, []byte(content), 0644)
+}
+
+// GetSealByName retrieves seal information by name
+func (rm *RefsManager) GetSealByName(sealName string) (hash [32]byte, timestamp time.Time, message string, err error) {
+	sealPath := filepath.Join(rm.refsDir, "seals", sealName)
+
+	data, err := os.ReadFile(sealPath)
+	if err != nil {
+		return [32]byte{}, time.Time{}, "", fmt.Errorf("seal not found: %w", err)
+	}
+
+	content := strings.TrimSpace(string(data))
+	parts := strings.SplitN(content, " ", 3)
+	if len(parts) < 3 {
+		return [32]byte{}, time.Time{}, "", fmt.Errorf("invalid seal file format")
+	}
+
+	// Parse hash
+	hashBytes, err := hex.DecodeString(parts[0])
+	if err != nil {
+		return [32]byte{}, time.Time{}, "", fmt.Errorf("invalid hash: %w", err)
+	}
+	copy(hash[:], hashBytes)
+
+	// Parse timestamp
+	timestampInt, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return [32]byte{}, time.Time{}, "", fmt.Errorf("invalid timestamp: %w", err)
+	}
+	timestamp = time.Unix(timestampInt, 0)
+
+	// Get message
+	message = parts[2]
+
+	return hash, timestamp, message, nil
+}
+
+// GetSealNameByHash retrieves seal name by hash (reverse lookup)
+func (rm *RefsManager) GetSealNameByHash(hash [32]byte) (string, error) {
+	sealsDir := filepath.Join(rm.refsDir, "seals")
+	if _, err := os.Stat(sealsDir); os.IsNotExist(err) {
+		return "", fmt.Errorf("no seals directory")
+	}
+
+	hashHex := hex.EncodeToString(hash[:])
+
+	// Walk through all seal files to find matching hash
+	var foundSealName string
+	err := filepath.Walk(sealsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil // Skip files we can't read
+		}
+
+		content := strings.TrimSpace(string(data))
+		parts := strings.SplitN(content, " ", 2)
+		if len(parts) < 1 {
+			return nil // Skip malformed files
+		}
+
+		if parts[0] == hashHex {
+			foundSealName = filepath.Base(path)
+			return fmt.Errorf("found") // Use error to break out of walk
+		}
+
+		return nil
+	})
+
+	if foundSealName != "" {
+		return foundSealName, nil
+	}
+
+	if err != nil && err.Error() == "found" {
+		return foundSealName, nil
+	}
+
+	return "", fmt.Errorf("seal name not found for hash")
+}
+
+// ListSealNames returns all seal names
+func (rm *RefsManager) ListSealNames() ([]string, error) {
+	sealsDir := filepath.Join(rm.refsDir, "seals")
+	if _, err := os.Stat(sealsDir); os.IsNotExist(err) {
+		return nil, nil // No seals yet
+	}
+
+	entries, err := os.ReadDir(sealsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read seals directory: %w", err)
+	}
+
+	var sealNames []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			sealNames = append(sealNames, entry.Name())
+		}
+	}
+
+	return sealNames, nil
+}
+
+// SealExists checks if a seal name exists
+func (rm *RefsManager) SealExists(sealName string) bool {
+	sealPath := filepath.Join(rm.refsDir, "seals", sealName)
+	_, err := os.Stat(sealPath)
+	return err == nil
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/url"
@@ -12,10 +13,12 @@ import (
 	"time"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
+	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/github"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
+	"github.com/javanhut/Ivaldi-vcs/internal/seals"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
 	"github.com/spf13/cobra"
@@ -500,6 +503,13 @@ var sealCmd = &cobra.Command{
 		var commitHashArray [32]byte
 		copy(commitHashArray[:], commitHash[:])
 
+		// Generate and store seal name
+		sealName := seals.GenerateSealName(commitHashArray)
+		err = refsManager.StoreSealName(sealName, commitHashArray, message)
+		if err != nil {
+			log.Printf("Warning: Failed to store seal name: %v", err)
+		}
+
 		// Update the timeline reference with commit hash
 		err = refsManager.CreateTimeline(
 			currentTimeline,
@@ -514,9 +524,9 @@ var sealCmd = &cobra.Command{
 			log.Printf("Note: Timeline update not yet implemented, but workspace state saved")
 		}
 
-		fmt.Printf("Successfully sealed commit on timeline '%s'\n", currentTimeline)
-		fmt.Printf("Commit message: %s\n", message)
-		fmt.Printf("Commit hash: %s\n", commitHash.String())
+		fmt.Printf("%s on timeline '%s'\n", colors.SuccessText("Successfully sealed commit"), colors.Bold(currentTimeline))
+		fmt.Printf("Created seal: %s (%s)\n", colors.Cyan(sealName), colors.Gray(hex.EncodeToString(commitHashArray[:4])))
+		fmt.Printf("Commit message: %s\n", colors.InfoText(message))
 
 		// Status tracking is now handled by the workspace system
 

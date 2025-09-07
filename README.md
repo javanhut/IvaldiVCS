@@ -37,8 +37,16 @@ ivaldi status
 # Stage files
 ivaldi gather file1.txt file2.js
 
-# Create commit
+# Create commit (generates memorable seal name)
 ivaldi seal "Add new features"
+# Output: Created seal: swift-eagle-flies-high-447abe9b (447abe9b)
+
+# Check current position
+ivaldi whereami
+# Output: Last Seal: swift-eagle-flies-high-447abe9b (just now)
+
+# List all seals
+ivaldi seals list
 
 # Create and switch timeline (branch)
 ivaldi timeline create feature-auth
@@ -73,9 +81,10 @@ Timelines are Ivaldi's equivalent to Git branches, but with enhanced features:
 - **Efficient storage**: Shared content between timelines via content-addressable storage
 
 ### Gather and Seal
-Ivaldi uses intuitive command names:
+Ivaldi uses intuitive command names with enhanced user experience:
 - `gather`: Stage files (like `git add`)
-- `seal`: Create commit (like `git commit`)
+- `seal`: Create commit with auto-generated human-friendly names (like `git commit`)
+- `seals`: Manage seals with memorable names like "swift-eagle-flies-high-447abe9b"
 
 ### Scout and Harvest
 Remote operations are designed for selective collaboration:
@@ -86,6 +95,7 @@ Remote operations are designed for selective collaboration:
 
 - **[Usage Guide](docs/usage-guide.md)**: Comprehensive guide to using Ivaldi VCS
 - **[Architecture](docs/architecture.md)**: Technical details about how Ivaldi works
+- **[Seal Names](docs/seal-names.md)**: Human-friendly commit naming system
 - **[Scout & Harvest](docs/scout-harvest.md)**: Remote timeline operations
 - **[Timeline Branching](docs/timeline-branching.md)**: Advanced branching features
 - **[Whereami Command](docs/whereami-command.md)**: Current timeline information
@@ -104,7 +114,9 @@ ivaldi whereami                 # Show current timeline details (alias: wai)
 ### File Operations
 ```bash
 ivaldi gather [files...]        # Stage files for commit
-ivaldi seal <message>           # Create commit with staged files
+ivaldi seal <message>           # Create commit with staged files (generates unique seal name)
+ivaldi seals list               # List all seals with their generated names
+ivaldi seals show <name|hash>   # Show detailed information about a seal
 ```
 
 ### Timeline Management
@@ -163,11 +175,12 @@ ivaldi upload                  # Push to GitHub
 ## Advantages over Git
 
 1. **Intuitive Commands**: Clear, descriptive command names
-2. **Auto-Shelving**: Never lose work when switching branches
-3. **Selective Sync**: Download only branches you need
-4. **Modern Hashing**: BLAKE3 for better security and performance
-5. **Clean Storage**: Content-addressable storage with automatic deduplication
-6. **GitHub Integration**: First-class GitHub support built-in
+2. **Human-Friendly Seals**: Commits get memorable names like "swift-eagle-flies-high-447abe9b"
+3. **Auto-Shelving**: Never lose work when switching branches
+4. **Selective Sync**: Download only branches you need
+5. **Modern Hashing**: BLAKE3 for better security and performance
+6. **Clean Storage**: Content-addressable storage with automatic deduplication
+7. **GitHub Integration**: First-class GitHub support built-in
 
 ## Development
 

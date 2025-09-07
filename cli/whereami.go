@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
+	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
@@ -57,18 +58,18 @@ var whereamiCmd = &cobra.Command{
 		}
 
 		// Display basic timeline info
-		fmt.Printf("Timeline: %s\n", currentTimelineName)
-		fmt.Printf("Type: Local Timeline\n")
+		fmt.Printf("Timeline: %s\n", colors.Bold(currentTimelineName))
+		fmt.Printf("Type: %s\n", colors.InfoText("Local Timeline"))
 
 		// Get last commit information if timeline has commits
 		if timeline.Blake3Hash != [32]byte{} {
-			err = displayCommitInfo(ivaldiDir, timeline)
+			err = displayCommitInfo(ivaldiDir, timeline, refsManager)
 			if err != nil {
-				fmt.Printf("Last Commit: %s (unable to read commit details: %v)\n",
+				fmt.Printf("Last Seal: %s (unable to read commit details: %v)\n",
 					hex.EncodeToString(timeline.Blake3Hash[:])[:8], err)
 			}
 		} else {
-			fmt.Printf("Last Commit: (no commits yet)\n")
+			fmt.Printf("Last Seal: (no seals yet)\n")
 		}
 
 		// Check remote sync status
@@ -89,13 +90,16 @@ var whereamiCmd = &cobra.Command{
 	},
 }
 
-// displayCommitInfo shows information about the last commit
-func displayCommitInfo(ivaldiDir string, timeline *refs.Timeline) error {
+// displayCommitInfo shows information about the last commit (now called seal)
+func displayCommitInfo(ivaldiDir string, timeline *refs.Timeline, refsManager *refs.RefsManager) error {
+	// Try to get seal name first
+	sealName, err := refsManager.GetSealNameByHash(timeline.Blake3Hash)
+
 	// Initialize CAS to read commit
 	objectsDir := filepath.Join(ivaldiDir, "objects")
-	casStore, err := cas.NewFileCAS(objectsDir)
-	if err != nil {
-		return fmt.Errorf("failed to initialize CAS: %w", err)
+	casStore, err2 := cas.NewFileCAS(objectsDir)
+	if err2 != nil {
+		return fmt.Errorf("failed to initialize CAS: %w", err2)
 	}
 
 	// Convert timeline hash to CAS hash
@@ -104,16 +108,22 @@ func displayCommitInfo(ivaldiDir string, timeline *refs.Timeline) error {
 
 	// Read commit object
 	commitReader := commit.NewCommitReader(casStore)
-	commitObj, err := commitReader.ReadCommit(commitHash)
-	if err != nil {
-		return fmt.Errorf("failed to read commit: %w", err)
+	commitObj, err2 := commitReader.ReadCommit(commitHash)
+	if err2 != nil {
+		return fmt.Errorf("failed to read commit: %w", err2)
 	}
 
-	// Format commit info
-	shortHash := hex.EncodeToString(timeline.Blake3Hash[:])[:8]
+	// Format commit info with seal name or hash fallback
 	timeAgo := formatTimeAgo(commitObj.CommitTime)
 
-	fmt.Printf("Last Commit: %s (%s)\n", shortHash, timeAgo)
+	if err == nil {
+		// Use seal name if available
+		fmt.Printf("Last Seal: %s (%s)\n", colors.Cyan(sealName), colors.Dim(timeAgo))
+	} else {
+		// Fall back to hash if no seal name
+		shortHash := hex.EncodeToString(timeline.Blake3Hash[:])[:8]
+		fmt.Printf("Last Seal: %s (%s)\n", colors.Cyan(shortHash), colors.Dim(timeAgo))
+	}
 
 	// Show commit message (first line only)
 	message := strings.Split(strings.TrimSpace(commitObj.Message), "\n")[0]
@@ -177,7 +187,7 @@ func displayWorkspaceStatus(ivaldiDir, workDir string) error {
 	}
 
 	if status.Clean {
-		fmt.Printf("Workspace: Clean\n")
+		fmt.Printf("Workspace: %s\n", colors.SuccessText("Clean"))
 	} else {
 		var added, modified, deleted int
 		for _, change := range status.Changes {
@@ -193,13 +203,13 @@ func displayWorkspaceStatus(ivaldiDir, workDir string) error {
 
 		parts := []string{}
 		if added > 0 {
-			parts = append(parts, fmt.Sprintf("%d added", added))
+			parts = append(parts, colors.Green(fmt.Sprintf("%d added", added)))
 		}
 		if modified > 0 {
-			parts = append(parts, fmt.Sprintf("%d modified", modified))
+			parts = append(parts, colors.Blue(fmt.Sprintf("%d modified", modified)))
 		}
 		if deleted > 0 {
-			parts = append(parts, fmt.Sprintf("%d deleted", deleted))
+			parts = append(parts, colors.Red(fmt.Sprintf("%d deleted", deleted)))
 		}
 
 		fmt.Printf("Workspace: %s\n", strings.Join(parts, ", "))
@@ -212,7 +222,7 @@ func displayWorkspaceStatus(ivaldiDir, workDir string) error {
 		if err == nil {
 			stagedFiles := strings.Fields(string(stageData))
 			if len(stagedFiles) > 0 {
-				fmt.Printf("Staged: %d files ready for seal\n", len(stagedFiles))
+				fmt.Printf("Staged: %s files ready for seal\n", colors.Green(fmt.Sprintf("%d", len(stagedFiles))))
 			}
 		}
 	}
