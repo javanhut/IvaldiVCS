@@ -10,6 +10,8 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/objects"
+	"github.com/javanhut/Ivaldi-vcs/internal/refs"
+	"github.com/javanhut/Ivaldi-vcs/internal/seals"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
 )
@@ -125,6 +127,18 @@ func createInitialCommit(ivaldiDir, workDir string) (*[32]byte, error) {
 	// Convert to array
 	var hashArray [32]byte
 	copy(hashArray[:], commitHash[:])
+
+	// Generate and store seal name for the initial commit
+	refsManager, err := refs.NewRefsManager(ivaldiDir)
+	if err == nil {
+		defer refsManager.Close()
+		sealName := seals.GenerateSealName(hashArray)
+		err = refsManager.StoreSealName(sealName, hashArray, "Initial commit")
+		if err != nil {
+			// Log but don't fail - seal name is nice to have but not critical
+			fmt.Printf("Warning: Failed to store seal name for initial commit: %v\n", err)
+		}
+	}
 
 	return &hashArray, nil
 }

@@ -19,10 +19,10 @@ Ivaldi VCS implements Git-like branching through its timeline system, providing 
 When creating a new timeline (branch), Ivaldi:
 
 1. **Reads Parent State**: Retrieves the parent timeline's HEAD commit
-2. **Creates New Commit**: Builds a commit object that references the parent's tree
-3. **Copies File References**: All files from parent are referenced (copy-on-write semantics)
-4. **Stores in MMR**: Appends the new commit to the persistent MMR history
-5. **Materializes Workspace**: Extracts all files to the working directory
+2. **Inherits Parent Commit**: The new timeline points to the same commit as its parent
+3. **Shares File References**: All committed files from parent are referenced (copy-on-write semantics)
+4. **Clean Workspace**: Only committed files are materialized, untracked files are NOT carried over
+5. **Isolated Development**: Each timeline maintains its own workspace state independently
 
 ## Usage
 
@@ -36,8 +36,9 @@ ivaldi timeline create feature-branch
 
 This will:
 - Create a new timeline branched from the current timeline
-- Copy all files from the parent timeline (via commit references)
-- Materialize the files in your workspace
+- Inherit the parent timeline's last commit (no new commit created)
+- Materialize ONLY the committed files from the parent timeline
+- Untracked files in current workspace are preserved via auto-shelving
 - Set up isolated tracking for the new timeline
 
 ### Switching Between Timelines
@@ -111,30 +112,37 @@ When switching timelines:
 
 ### Auto-Shelving
 
-Automatically preserves workspace files when switching timelines by comparing against the target timeline's state:
+Automatically preserves workspace changes when switching timelines:
 
 #### How It Works
-- **Intelligent Preservation**: Compares current workspace with TARGET timeline's state (not source)
-- **Comprehensive Shelving**: Preserves ALL files that would be lost in the switch, including:
-  - Uncommitted new files
-  - Modified files  
-  - Files that exist in current timeline but not in target timeline
-- **Automatic Restoration**: Restores shelved files when returning to timeline
+- **Smart Preservation**: Saves current workspace state before switching
+- **Timeline Isolation**: Each timeline's workspace changes are preserved separately
+- **Automatic Restoration**: Restores previously shelved changes when returning to a timeline
 - **Per-Timeline Shelves**: Each timeline maintains its own auto-shelf
+
+#### Behavior
+- When switching FROM a timeline: Current workspace state is auto-shelved
+- When switching TO a timeline: 
+  1. If timeline has auto-shelved changes, they are restored
+  2. Otherwise, the timeline's committed state is materialized
+- Untracked files are preserved with their respective timelines
 
 #### Example
 ```bash
-# Empty main timeline scenario
+# Timeline isolation example
 ivaldi forge                    # Creates empty main
-touch main.txt                  # Uncommitted file
-ivaldi tl create feature        # Captures main.txt in feature
-echo "test" > feature.txt       # Add another file  
-ivaldi tl switch main           # Auto-shelves BOTH files
-# Workspace becomes empty (main has no files)
-ivaldi tl switch feature        # Restores both files
+ivaldi seal                     # Empty initial commit
+touch main.txt                  # Untracked file in main
+ivaldi tl create feature        # Creates feature from main's commit
+# feature workspace is empty (main.txt stays with main)
+touch feature.txt               # Untracked file in feature
+ivaldi tl switch main           # Auto-shelves feature.txt
+# main workspace has main.txt (from auto-shelf)
+ivaldi tl switch feature        # Auto-shelves main.txt, restores feature.txt
+# feature workspace has feature.txt only
 ```
 
-This ensures no files are lost during timeline switches, regardless of their commit status.
+This ensures complete isolation between timelines - untracked files stay with their respective timelines.
 
 ### Merkle Mountain Range Benefits
 

@@ -199,56 +199,55 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 		}
 	}
 
-	// Auto-shelf current changes before switching (if enabled and there are changes)
-	if enableAutoShelf && currentTimelineName != timelineName {
-		// Get the TARGET timeline's state to see what files will be lost
-		targetBaseIndex, err := m.createTargetIndex(*timeline)
-		if err != nil {
-			return fmt.Errorf("failed to get target timeline index for auto-shelving: %w", err)
+	// Auto-shelf current changes before switching (if enabled and switching between different timelines)
+	if enableAutoShelf && currentTimelineName != "" && currentTimelineName != timelineName {
+		shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
+
+		// Always remove any existing auto-shelf for the current timeline first
+		if err := shelfManager.RemoveAutoShelf(currentTimelineName); err != nil {
+			// Log but don't fail - maybe there was no auto-shelf
 		}
 
-		// Compare current workspace with TARGET timeline to see what will disappear
-		// This ensures we preserve ALL files that don't exist in the target
+		// Get the CURRENT timeline's committed state to use as base
+		currentTimelineBase, err := m.getTimelineBaseIndex(currentTimelineName, refsManager)
+		if err != nil {
+			// If we can't get the base, use an empty index
+			wsBuilder := wsindex.NewBuilder(m.CAS)
+			currentTimelineBase, _ = wsBuilder.Build(nil)
+		}
+
+		// ALWAYS create new auto-shelf with the CURRENT workspace state
+		// This preserves the exact workspace state including all untracked files
+		autoShelf, err := shelfManager.CreateAutoShelf(currentTimelineName, currentState.Index, currentTimelineBase)
+		if err != nil {
+			return fmt.Errorf("failed to create auto-shelf: %w", err)
+		}
+
+		// Count and report changes if any
 		differ := diffmerge.NewDiffer(m.CAS)
-		diff, err := differ.DiffWorkspaces(targetBaseIndex, currentState.Index)
-		if err != nil {
-			return fmt.Errorf("failed to compute diff for auto-shelving: %w", err)
-		}
-
-		// If there are files that will be lost (they exist in workspace but not in target)
-		if len(diff.FileChanges) > 0 {
-			shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
-
-			// Remove any existing auto-shelf for the current timeline first
-			if err := shelfManager.RemoveAutoShelf(currentTimelineName); err != nil {
-				// Log but don't fail - maybe there was no auto-shelf
-			}
-
-			// Create new auto-shelf with the TARGET timeline as base
-			// This preserves all files that would be lost when switching
-			autoShelf, err := shelfManager.CreateAutoShelf(currentTimelineName, currentState.Index, targetBaseIndex)
-			if err != nil {
-				return fmt.Errorf("failed to create auto-shelf: %w", err)
-			}
-
+		diff, err := differ.DiffWorkspaces(currentTimelineBase, currentState.Index)
+		if err == nil && len(diff.FileChanges) > 0 {
 			fmt.Printf("Auto-shelved %d changes from timeline '%s' (shelf: %s)\n",
 				len(diff.FileChanges), currentTimelineName, autoShelf.ID)
+		} else {
+			// Even with no changes, we still shelved the workspace state
+			fmt.Printf("Auto-shelved workspace state for timeline '%s' (shelf: %s)\n",
+				currentTimelineName, autoShelf.ID)
 		}
 	}
 
-	// Create target index based on timeline hash
-	targetIndex, err := m.createTargetIndex(*timeline)
-	if err != nil {
-		return fmt.Errorf("failed to create target index: %w", err)
-	}
-
-	// Check if there's an auto-shelf for the target timeline to restore
+	// Check if there's an auto-shelf for the target timeline to restore first
+	// This takes priority over the committed timeline state
+	var targetIndex wsindex.IndexRef
+	var hasAutoShelf bool
+	
 	if enableAutoShelf {
 		shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
 		autoShelf, err := shelfManager.GetAutoShelf(timelineName)
 		if err == nil && autoShelf != nil {
 			// Use the shelved workspace state instead of the clean timeline state
 			targetIndex = autoShelf.WorkspaceIndex
+			hasAutoShelf = true
 			fmt.Printf("Restoring auto-shelved changes for timeline '%s' (shelf: %s)\n",
 				timelineName, autoShelf.ID)
 
@@ -256,6 +255,15 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 			if err := shelfManager.RemoveAutoShelf(timelineName); err != nil {
 				fmt.Printf("Warning: failed to remove applied auto-shelf: %v\n", err)
 			}
+		}
+	}
+	
+	// Only create target index from timeline commit if we don't have an autoshelf
+	if !hasAutoShelf {
+		var err error
+		targetIndex, err = m.createTargetIndex(*timeline)
+		if err != nil {
+			return fmt.Errorf("failed to create target index: %w", err)
 		}
 	}
 
