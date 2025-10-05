@@ -101,11 +101,21 @@ func (cb *CommitBuilder) CreateCommit(
 
 	// Step 3: Add to MMR history (if MMR is available)
 	if cb.History != nil {
+		// Determine PrevIdx from parent commits
+		prevIdx := history.NoParent
+		if len(parents) > 0 {
+			// Read the first parent's commit to get its MMR position
+			parentCommit, err := cb.readCommit(parents[0])
+			if err == nil && parentCommit.MMRPosition > 0 {
+				prevIdx = parentCommit.MMRPosition
+			}
+		}
+
 		// Create leaf for MMR
 		leaf := history.Leaf{
 			TreeRoot:   commit.TreeHash,
 			TimelineID: "main", // Default timeline for now
-			PrevIdx:    history.NoParent, // TODO: set proper parent
+			PrevIdx:    prevIdx,
 			Author:     commit.Author,
 			TimeUnix:   commit.CommitTime.Unix(),
 			Message:    commit.Message,
@@ -622,4 +632,10 @@ func parseUint64(s string) (uint64, error) {
 func (cb *CommitBuilder) GetCommitHash(commit *CommitObject) cas.Hash {
 	data := cb.encodeCommit(commit)
 	return cas.SumB3(data)
+}
+
+// readCommit reads a commit from CAS (helper for internal use)
+func (cb *CommitBuilder) readCommit(hash cas.Hash) (*CommitObject, error) {
+	reader := NewCommitReader(cb.CAS)
+	return reader.ReadCommit(hash)
 }

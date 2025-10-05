@@ -527,26 +527,45 @@ func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineNa
 	}
 	defer mmr.Close()
 
+	// Check if timeline already exists to get parent commit
+	var parents []cas.Hash
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err == nil {
+		if existingTimeline, err := refsManager.GetTimeline(timelineName, refs.LocalTimeline); err == nil {
+			// Timeline exists, use its current commit as parent
+			if existingTimeline.Blake3Hash != [32]byte{} {
+				var parentHash cas.Hash
+				copy(parentHash[:], existingTimeline.Blake3Hash[:])
+				parents = append(parents, parentHash)
+			}
+		}
+	}
+
 	// Create commit for this timeline
 	commitBuilder := commit.NewCommitBuilder(rs.casStore, mmr.MMR)
 	commitObj, err := commitBuilder.CreateCommit(
 		workspaceFiles,
-		nil, // TODO: Handle parent commits for proper history
+		parents,
 		"timeline-harvest",
 		"timeline-harvest",
 		fmt.Sprintf("Harvested timeline '%s' from GitHub (SHA: %s)", timelineName, branchInfo.Commit.SHA[:7]),
 	)
 	if err != nil {
+		if refsManager != nil {
+			refsManager.Close()
+		}
 		return fmt.Errorf("failed to create commit: %w", err)
 	}
 
 	// Get commit hash
 	commitHash := commitBuilder.GetCommitHash(commitObj)
 
-	// Create or update local timeline
-	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
-	if err != nil {
-		return fmt.Errorf("failed to create refs manager: %w", err)
+	// Reopen refs manager if it was nil
+	if refsManager == nil {
+		refsManager, err = refs.NewRefsManager(rs.ivaldiDir)
+		if err != nil {
+			return fmt.Errorf("failed to create refs manager: %w", err)
+		}
 	}
 	defer refsManager.Close()
 

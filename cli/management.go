@@ -563,11 +563,26 @@ var sealCmd = &cobra.Command{
 
 		fmt.Printf("Found %d files in workspace\n", len(workspaceFiles))
 
+		// Get author from config
+		author, err := getAuthorFromConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get author from config: %w\nPlease set user.name and user.email: ivaldi config user.name \"Your Name\"", err)
+		}
+
+		// Get parent commit from current timeline
+		var parents []cas.Hash
+		timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
+		if err == nil && timeline.Blake3Hash != [32]byte{} {
+			// Timeline has a previous commit, use it as parent
+			var parentHash cas.Hash
+			copy(parentHash[:], timeline.Blake3Hash[:])
+			parents = append(parents, parentHash)
+		}
+
 		// Create commit object
-		author := "Ivaldi User <user@example.com>" // TODO: get from config
 		commitObj, err := commitBuilder.CreateCommit(
 			workspaceFiles,
-			nil, // TODO: get parent commits
+			parents,
 			author,
 			author,
 			message,
