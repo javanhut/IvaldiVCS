@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/config"
@@ -18,6 +21,7 @@ Configuration can be set at two levels:
 - Repository (.ivaldi/config) - applies to current repository only
 
 Examples:
+  ivaldi config                            # Interactive mode
   ivaldi config user.name "Your Name"
   ivaldi config user.email "you@example.com"
   ivaldi config --global user.name "Your Name"
@@ -40,6 +44,11 @@ func runConfig(cmd *cobra.Command, args []string) error {
 	// Handle --list flag
 	if configList {
 		return listConfig()
+	}
+
+	// Handle interactive mode (no args and no flags)
+	if len(args) == 0 {
+		return interactiveConfig()
 	}
 
 	// Handle get value (1 arg)
@@ -142,6 +151,102 @@ func setConfigValue(key, value string, global bool) error {
 				fmt.Printf("  %s\n", colors.InfoText("ivaldi config user.email \"you@example.com\""))
 			}
 		}
+	}
+
+	return nil
+}
+
+// interactiveConfig runs an interactive configuration session
+func interactiveConfig() error {
+	// Load existing config
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Println(colors.SectionHeader("Interactive Configuration"))
+	fmt.Println()
+
+	// Get username
+	currentName := cfg.User.Name
+	if currentName == "" {
+		currentName = "not set"
+	}
+	fmt.Printf("Username (%s)> ", colors.Dim(currentName))
+	userName, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read username: %w", err)
+	}
+	userName = strings.TrimSpace(userName)
+	if userName != "" {
+		cfg.User.Name = userName
+	} else if cfg.User.Name == "" || cfg.User.Name == "not set" {
+		// If no default and user pressed enter, keep prompting or use empty
+		cfg.User.Name = ""
+	}
+
+	// Get email
+	currentEmail := cfg.User.Email
+	if currentEmail == "" {
+		currentEmail = "not set"
+	}
+	fmt.Printf("Email (%s)> ", colors.Dim(currentEmail))
+	userEmail, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read email: %w", err)
+	}
+	userEmail = strings.TrimSpace(userEmail)
+	if userEmail != "" {
+		cfg.User.Email = userEmail
+	} else if cfg.User.Email == "" || cfg.User.Email == "not set" {
+		cfg.User.Email = ""
+	}
+
+	// Get scope (global or local)
+	fmt.Printf("Scope (global/local) [%s]> ", colors.Dim("global"))
+	scopeInput, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read scope: %w", err)
+	}
+	scopeInput = strings.TrimSpace(strings.ToLower(scopeInput))
+
+	isGlobal := true
+	if scopeInput == "local" || scopeInput == "l" {
+		isGlobal = false
+	} else if scopeInput != "" && scopeInput != "global" && scopeInput != "g" {
+		fmt.Printf("%s Invalid scope '%s', using global\n", colors.Yellow("Warning:"), scopeInput)
+	}
+
+	// Save config
+	var saveErr error
+	if isGlobal {
+		saveErr = config.SaveGlobalConfig(cfg)
+	} else {
+		saveErr = config.SaveRepoConfig(cfg)
+	}
+
+	if saveErr != nil {
+		return fmt.Errorf("failed to save config: %w", saveErr)
+	}
+
+	// Show summary
+	fmt.Println()
+	fmt.Println(colors.SuccessText("Config saved!"))
+	fmt.Println()
+
+	scope := "global"
+	if !isGlobal {
+		scope = "local"
+	}
+
+	fmt.Printf("  Scope: %s\n", colors.InfoText(scope))
+	if cfg.User.Name != "" {
+		fmt.Printf("  Username: %s\n", colors.InfoText(cfg.User.Name))
+	}
+	if cfg.User.Email != "" {
+		fmt.Printf("  Email: %s\n", colors.InfoText(cfg.User.Email))
 	}
 
 	return nil
