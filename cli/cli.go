@@ -65,6 +65,9 @@ func init() {
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(diffCmd)
 	rootCmd.AddCommand(resetCmd)
+
+	// Merge command
+	rootCmd.AddCommand(fuseCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {

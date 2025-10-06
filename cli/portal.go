@@ -56,7 +56,7 @@ Examples:
 			return fmt.Errorf("failed to set GitHub repository: %w", err)
 		}
 
-		fmt.Printf("✓ Added GitHub repository connection: %s/%s\n", owner, repo)
+		fmt.Printf("[OK] Added GitHub repository connection: %s/%s\n", owner, repo)
 		return nil
 	},
 }
@@ -132,7 +132,7 @@ var portalRemoveCmd = &cobra.Command{
 			return fmt.Errorf("failed to remove GitHub repository: %w", err)
 		}
 
-		fmt.Printf("✓ Removed GitHub repository connection: %s/%s\n", owner, repo)
+		fmt.Printf("[OK] Removed GitHub repository connection: %s/%s\n", owner, repo)
 		fmt.Println("You can now use 'ivaldi portal add owner/repo' to configure a new connection.")
 
 		return nil
