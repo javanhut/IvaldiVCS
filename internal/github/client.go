@@ -61,6 +61,16 @@ type Branch struct {
 	} `json:"commit"`
 }
 
+// Commit represents a GitHub commit
+type Commit struct {
+	SHA     string `json:"sha"`
+	TreeSHA string `json:"-"` // Populated from Tree field
+	Tree    struct {
+		SHA string `json:"sha"`
+	} `json:"tree"`
+	Message string `json:"message"`
+}
+
 // FileContent represents a file's content from GitHub
 type FileContent struct {
 	Type        string `json:"type"`
@@ -92,6 +102,62 @@ type Tree struct {
 	URL       string      `json:"url"`
 	Tree      []TreeEntry `json:"tree"`
 	Truncated bool        `json:"truncated"`
+}
+
+// BlobResponse represents a response from creating a blob
+type BlobResponse struct {
+	SHA string `json:"sha"`
+	URL string `json:"url"`
+}
+
+// CreateTreeRequest represents a request to create a tree
+type CreateTreeRequest struct {
+	Tree    []GitTreeEntry `json:"tree"`
+	BaseTree string        `json:"base_tree,omitempty"`
+}
+
+// GitTreeEntry represents an entry when creating a tree
+type GitTreeEntry struct {
+	Path    string `json:"path"`
+	Mode    string `json:"mode"`
+	Type    string `json:"type"`
+	SHA     string `json:"sha,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+// TreeResponse represents a response from creating a tree
+type TreeResponse struct {
+	SHA string `json:"sha"`
+	URL string `json:"url"`
+}
+
+// CreateCommitRequest represents a request to create a commit
+type CreateCommitRequest struct {
+	Message string   `json:"message"`
+	Tree    string   `json:"tree"`
+	Parents []string `json:"parents"`
+	Author  *GitUser `json:"author,omitempty"`
+	Committer *GitUser `json:"committer,omitempty"`
+}
+
+// GitUser represents a git user
+type GitUser struct {
+	Name  string    `json:"name"`
+	Email string    `json:"email"`
+	Date  time.Time `json:"date,omitempty"`
+}
+
+// CommitResponse represents a response from creating a commit
+type CommitResponse struct {
+	SHA     string `json:"sha"`
+	URL     string `json:"url"`
+	Message string `json:"message"`
+}
+
+// UpdateRefRequest represents a request to update a reference
+type UpdateRefRequest struct {
+	SHA   string `json:"sha"`
+	Force bool   `json:"force,omitempty"`
 }
 
 // NewClient creates a new GitHub API client
@@ -349,6 +415,26 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 	return &b, nil
 }
 
+// GetCommit fetches commit information
+func (c *Client) GetCommit(ctx context.Context, owner, repo, sha string) (*Commit, error) {
+	path := fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, sha)
+	resp, err := c.doRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var commit Commit
+	if err := json.NewDecoder(resp.Body).Decode(&commit); err != nil {
+		return nil, fmt.Errorf("failed to decode commit: %w", err)
+	}
+
+	// Populate TreeSHA from Tree field
+	commit.TreeSHA = commit.Tree.SHA
+
+	return &commit, nil
+}
+
 // ListBranches fetches all branches from a repository
 func (c *Client) ListBranches(ctx context.Context, owner, repo string) ([]*Branch, error) {
 	path := fmt.Sprintf("/repos/%s/%s/branches", owner, repo)
@@ -364,6 +450,24 @@ func (c *Client) ListBranches(ctx context.Context, owner, repo string) ([]*Branc
 	}
 
 	return branches, nil
+}
+
+// CreateBranch creates a new branch in a repository from a source SHA
+func (c *Client) CreateBranch(ctx context.Context, owner, repo, branchName, sourceSHA string) error {
+	path := fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo)
+
+	requestBody := map[string]string{
+		"ref": fmt.Sprintf("refs/heads/%s", branchName),
+		"sha": sourceSHA,
+	}
+
+	resp, err := c.doRequest(ctx, "POST", path, requestBody)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
 }
 
 // GetFileContent fetches a file's content from a repository
@@ -524,5 +628,77 @@ func (c *Client) TestAuth(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
+	return nil
+}
+
+// CreateBlob creates a blob object in the repository
+func (c *Client) CreateBlob(ctx context.Context, owner, repo string, content []byte) (*BlobResponse, error) {
+	apiPath := fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo)
+
+	requestBody := map[string]string{
+		"content":  base64.StdEncoding.EncodeToString(content),
+		"encoding": "base64",
+	}
+
+	resp, err := c.doRequest(ctx, "POST", apiPath, requestBody)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var blob BlobResponse
+	if err := json.NewDecoder(resp.Body).Decode(&blob); err != nil {
+		return nil, fmt.Errorf("failed to decode blob response: %w", err)
+	}
+
+	return &blob, nil
+}
+
+// CreateTree creates a tree object in the repository
+func (c *Client) CreateTree(ctx context.Context, owner, repo string, req CreateTreeRequest) (*TreeResponse, error) {
+	apiPath := fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo)
+
+	resp, err := c.doRequest(ctx, "POST", apiPath, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var tree TreeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tree); err != nil {
+		return nil, fmt.Errorf("failed to decode tree response: %w", err)
+	}
+
+	return &tree, nil
+}
+
+// CreateGitCommit creates a commit object in the repository
+func (c *Client) CreateGitCommit(ctx context.Context, owner, repo string, req CreateCommitRequest) (*CommitResponse, error) {
+	apiPath := fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo)
+
+	resp, err := c.doRequest(ctx, "POST", apiPath, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var commit CommitResponse
+	if err := json.NewDecoder(resp.Body).Decode(&commit); err != nil {
+		return nil, fmt.Errorf("failed to decode commit response: %w", err)
+	}
+
+	return &commit, nil
+}
+
+// UpdateRef updates a reference (like a branch) to point to a new commit
+func (c *Client) UpdateRef(ctx context.Context, owner, repo, ref string, req UpdateRefRequest) error {
+	apiPath := fmt.Sprintf("/repos/%s/%s/git/refs/%s", owner, repo, ref)
+
+	resp, err := c.doRequest(ctx, "PATCH", apiPath, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
 	return nil
 }

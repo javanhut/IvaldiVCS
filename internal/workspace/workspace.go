@@ -601,10 +601,27 @@ func (m *Materializer) CleanWorkspace() error {
 
 // GetWorkspaceStatus returns detailed status of workspace files.
 func (m *Materializer) GetWorkspaceStatus() (*WorkspaceStatus, error) {
-	// Get current tracked state
-	currentState, err := m.GetCurrentState()
+	// Get current timeline name
+	refsManager, err := refs.NewRefsManager(m.IvaldiDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current state: %w", err)
+		return nil, fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	timelineName, err := refsManager.GetCurrentTimeline()
+	if err != nil {
+		// No current timeline, return empty status
+		return &WorkspaceStatus{
+			TimelineName: "",
+			Clean:        true,
+			Changes:      nil,
+		}, nil
+	}
+
+	// Get the committed state for this timeline
+	committedIndex, err := m.getTimelineBaseIndex(timelineName, refsManager)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get committed timeline state: %w", err)
 	}
 
 	// Scan actual workspace
@@ -613,15 +630,15 @@ func (m *Materializer) GetWorkspaceStatus() (*WorkspaceStatus, error) {
 		return nil, fmt.Errorf("failed to scan workspace: %w", err)
 	}
 
-	// Compute differences
+	// Compute differences between committed state and actual workspace
 	differ := diffmerge.NewDiffer(m.CAS)
-	diff, err := differ.DiffWorkspaces(currentState.Index, actualIndex)
+	diff, err := differ.DiffWorkspaces(committedIndex, actualIndex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute status diff: %w", err)
 	}
 
 	status := &WorkspaceStatus{
-		TimelineName: currentState.TimelineName,
+		TimelineName: timelineName,
 		Clean:        len(diff.FileChanges) == 0,
 		Changes:      diff.FileChanges,
 	}

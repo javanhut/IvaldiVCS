@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
+	"github.com/javanhut/Ivaldi-vcs/internal/commit"
+	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
+	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
 )
 
 func setupTestWorkspace(t *testing.T) (string, string, *Materializer, func()) {
@@ -125,24 +128,57 @@ func TestMaterializeTimeline(t *testing.T) {
 	ivaldiDir, workDir, materializer, cleanup := setupTestWorkspace(t)
 	defer cleanup()
 
-	// Create initial files
-	err := os.WriteFile(filepath.Join(workDir, "initial.txt"), []byte("initial content"), 0644)
+	// Create initial file in workspace
+	err := os.WriteFile(filepath.Join(workDir, "feature.txt"), []byte("feature content"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to create initial file: %v", err)
 	}
 
-	// Create a second timeline
+	// Scan workspace to get files
+	wsIndex, err := materializer.ScanWorkspace()
+	if err != nil {
+		t.Fatalf("Failed to scan workspace: %v", err)
+	}
+
+	// Get workspace files
+	wsLoader := wsindex.NewLoader(materializer.CAS)
+	workspaceFiles, err := wsLoader.ListAll(wsIndex)
+	if err != nil {
+		t.Fatalf("Failed to list workspace files: %v", err)
+	}
+
+	// Create a commit for the feature timeline
+	mmr := history.NewMMR()
+	commitBuilder := commit.NewCommitBuilder(materializer.CAS, mmr)
+	commitObj, err := commitBuilder.CreateCommit(
+		workspaceFiles,
+		nil,
+		"test-author",
+		"test-committer",
+		"Feature timeline commit",
+	)
+	if err != nil {
+		t.Fatalf("Failed to create commit: %v", err)
+	}
+
+	// Get commit hash
+	commitHash := commitBuilder.GetCommitHash(commitObj)
+
+	// Create feature timeline with the actual commit hash
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
 		t.Fatalf("Failed to create refs manager: %v", err)
 	}
 
+	var blake3Hash [32]byte
+	copy(blake3Hash[:], commitHash[:])
+
 	err = refsManager.CreateTimeline(
 		"feature",
 		refs.LocalTimeline,
-		[32]byte{1, 2, 3}, // Different hash to simulate different content
-		[32]byte{},        // Empty sha256 hash
-		"",                // No git SHA1
+		blake3Hash,
+		[32]byte{}, // Empty sha256 hash
+		"",         // No git SHA1
 		"Feature timeline",
 	)
 	if err != nil {
@@ -167,10 +203,10 @@ func TestMaterializeTimeline(t *testing.T) {
 		t.Errorf("Expected current timeline 'feature', got %s", state.TimelineName)
 	}
 
-	// Check that timeline-info.txt was created (from createTargetIndex)
-	infoPath := filepath.Join(workDir, "timeline-info.txt")
-	if _, err := os.Stat(infoPath); os.IsNotExist(err) {
-		t.Error("Expected timeline-info.txt to be created")
+	// Verify the file still exists after materialization
+	featurePath := filepath.Join(workDir, "feature.txt")
+	if _, err := os.Stat(featurePath); os.IsNotExist(err) {
+		t.Error("Expected feature.txt to exist after materialization")
 	}
 }
 

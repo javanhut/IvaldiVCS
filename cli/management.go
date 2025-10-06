@@ -556,9 +556,22 @@ var sealCmd = &cobra.Command{
 
 		// Get workspace files
 		wsLoader := wsindex.NewLoader(casStore)
-		workspaceFiles, err := wsLoader.ListAll(wsIndex)
+		allWorkspaceFiles, err := wsLoader.ListAll(wsIndex)
 		if err != nil {
 			return fmt.Errorf("failed to list workspace files: %w", err)
+		}
+
+		// Filter workspace files to only include staged files
+		stagedFileMap := make(map[string]bool)
+		for _, file := range stagedFiles {
+			stagedFileMap[file] = true
+		}
+
+		var workspaceFiles []wsindex.FileMetadata
+		for _, file := range allWorkspaceFiles {
+			if stagedFileMap[file.Path] {
+				workspaceFiles = append(workspaceFiles, file)
+			}
 		}
 
 		fmt.Printf("Found %d files in workspace\n", len(workspaceFiles))
