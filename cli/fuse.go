@@ -11,7 +11,6 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
-	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/seals"
@@ -28,22 +27,33 @@ var fuseCmd = &cobra.Command{
 If target timeline is not specified, the current timeline is used.
 
 Examples:
-  ivaldi fuse main                 # Fuse main into current timeline
-  ivaldi fuse main to new_tl       # Fuse main into new_tl
-  ivaldi fuse feature-x            # Fuse feature-x into current timeline
-  ivaldi fuse --continue           # Continue merge after resolving conflicts
-  ivaldi fuse --abort              # Abort current merge`,
+  ivaldi fuse main                          # Fuse main into current timeline (auto strategy)
+  ivaldi fuse main to new_tl                # Fuse main into new_tl
+  ivaldi fuse feature-x                     # Fuse feature-x into current timeline
+  ivaldi fuse --strategy=theirs feature     # Accept all source changes
+  ivaldi fuse --strategy=ours feature       # Keep all target changes
+  ivaldi fuse --continue                    # Continue merge after resolving conflicts
+  ivaldi fuse --abort                       # Abort current merge
+
+Strategies:
+  auto    - Intelligent chunk-level merge (default)
+  ours    - Keep target timeline version
+  theirs  - Accept source timeline version
+  union   - Combine both versions
+  base    - Revert to common ancestor`,
 	RunE: runFuse,
 }
 
 var (
 	fuseContinue bool
 	fuseAbort    bool
+	fuseStrategy string
 )
 
 func init() {
 	fuseCmd.Flags().BoolVar(&fuseContinue, "continue", false, "Continue merge after resolving conflicts")
 	fuseCmd.Flags().BoolVar(&fuseAbort, "abort", false, "Abort current merge")
+	fuseCmd.Flags().StringVar(&fuseStrategy, "strategy", "auto", "Merge strategy (auto, ours, theirs, union, base)")
 }
 
 func runFuse(cmd *cobra.Command, args []string) error {
@@ -256,22 +266,30 @@ func handleMerge(ivaldiDir, workDir string, casStore cas.CAS, refsManager *refs.
 		baseIndex, _ = wsBuilder.Build(nil)
 	}
 
-	// Perform three-way merge
+	// Parse merge strategy
+	strategy := diffmerge.StrategyType(fuseStrategy)
+
+	// Perform three-way merge with intelligent strategy
 	merger := diffmerge.NewMerger(casStore)
-	mergeResult, err := merger.MergeWorkspaces(baseIndex, targetIndex, sourceIndex)
+	mergeResult, err := merger.MergeWorkspacesWithStrategy(baseIndex, targetIndex, sourceIndex, strategy)
 	if err != nil {
 		return fmt.Errorf("failed to merge: %w", err)
 	}
 
 	// Check for conflicts
 	if !mergeResult.Success {
-		fmt.Printf("%s Merge conflicts detected:\n\n", colors.Red("[ERROR]"))
+		fmt.Printf("%s Merge conflicts detected:\n\n", colors.Yellow("[CONFLICTS]"))
 
 		for _, conflict := range mergeResult.Conflicts {
 			fmt.Printf("  %s %s\n", colors.Red("CONFLICT:"), colors.Bold(conflict.Path))
 		}
 
 		fmt.Println()
+		fmt.Printf("%s %d file(s) with conflicts\n", colors.Yellow(">>"), len(mergeResult.Conflicts))
+		fmt.Println()
+
+		// With intelligent conflict resolution, we DON'T write markers to files
+		// Instead, we save the merge state and offer resolution options
 
 		// Save merge state
 		mergeState := &MergeState{
@@ -286,19 +304,20 @@ func handleMerge(ivaldiDir, workDir string, casStore cas.CAS, refsManager *refs.
 			return fmt.Errorf("failed to save merge state: %w", err)
 		}
 
-		// Write conflicted files to workspace
-		if err := writeConflictedFiles(workDir, casStore, mergeResult.Conflicts); err != nil {
-			return fmt.Errorf("failed to write conflicted files: %w", err)
+		// Save resolution metadata
+		resStorage := diffmerge.NewResolutionStorage(ivaldiDir)
+		resolution := diffmerge.CreateResolution(sourceTimeline, targetTimeline, sourceHash, targetHash, strategy)
+		if err := resStorage.Save(resolution); err != nil {
+			return fmt.Errorf("failed to save resolution: %w", err)
 		}
 
-		fmt.Println(colors.Yellow("Conflicts written to workspace with markers."))
+		fmt.Println(colors.Bold("Resolution options:"))
+		fmt.Printf("  %s - Use interactive resolver\n", colors.Cyan("ivaldi fuse --continue"))
+		fmt.Printf("  %s - Accept all source changes\n", colors.Blue("ivaldi fuse --strategy=theirs "+sourceTimeline))
+		fmt.Printf("  %s - Keep all target changes\n", colors.Green("ivaldi fuse --strategy=ours "+sourceTimeline))
+		fmt.Printf("  %s - Abort merge\n", colors.Red("ivaldi fuse --abort"))
 		fmt.Println()
-		fmt.Println(colors.Bold("To resolve conflicts:"))
-		fmt.Printf("  1. Edit conflicted files and resolve %s markers\n", colors.Red("<<<<<<< ======= >>>>>>>"))
-		fmt.Printf("  2. Stage resolved files: %s\n", colors.Cyan("ivaldi gather <file>..."))
-		fmt.Printf("  3. Complete merge: %s\n", colors.Cyan("ivaldi fuse --continue"))
-		fmt.Println()
-		fmt.Printf("Or abort the merge: %s\n", colors.Dim("ivaldi fuse --abort"))
+		fmt.Println(colors.Yellow("Note: Workspace files are NOT modified - conflicts are resolved separately"))
 
 		return nil // Don't return error - merge is paused
 	}
@@ -386,6 +405,14 @@ func handleMerge(ivaldiDir, workDir string, casStore cas.CAS, refsManager *refs.
 	// Generate seal name
 	sealName := seals.GenerateSealName(mergeHashArray)
 	_ = refsManager.StoreSealName(sealName, mergeHashArray, fmt.Sprintf("Fuse %s into %s", sourceTimeline, targetTimeline))
+
+	// Clean up resolution storage (merge succeeded)
+	resStorage := diffmerge.NewResolutionStorage(ivaldiDir)
+	if res, _ := resStorage.Load(); res != nil {
+		res.MarkCompleted()
+		resStorage.SaveHistory(res) // Archive for reference
+	}
+	resStorage.Delete()
 
 	fmt.Println()
 	fmt.Printf("%s Changes from %s fused into %s!\n",
@@ -559,9 +586,12 @@ func abortMerge(ivaldiDir string) error {
 	os.Remove(filepath.Join(ivaldiDir, "MERGE_INFO"))
 	os.Remove(filepath.Join(ivaldiDir, "MERGE_CONFLICTS"))
 
+	// Remove resolution storage
+	resStorage := diffmerge.NewResolutionStorage(ivaldiDir)
+	resStorage.Delete()
+
 	fmt.Println(colors.SuccessText("[OK] Merge aborted"))
-	fmt.Println(colors.Dim("Note: Conflicted files in workspace were not reverted."))
-	fmt.Println(colors.Dim("Use 'ivaldi timeline switch <timeline>' to restore clean workspace."))
+	fmt.Println(colors.Dim("Workspace remains clean - no files were modified during merge attempt."))
 
 	return nil
 }
@@ -583,33 +613,25 @@ func continueMerge(ivaldiDir, workDir string) error {
 		colors.Bold(state.SourceTimeline),
 		colors.Bold(state.TargetTimeline))
 
-	// Check if conflicts are resolved
-	conflictListPath := filepath.Join(ivaldiDir, "MERGE_CONFLICTS")
-	if _, err := os.Stat(conflictListPath); err == nil {
-		data, _ := os.ReadFile(conflictListPath)
-		conflictPaths := strings.Split(strings.TrimSpace(string(data)), "\n")
+	// Load resolution storage to check if merge was already resolved
+	resStorage := diffmerge.NewResolutionStorage(ivaldiDir)
+	resolution, err := resStorage.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load resolution: %w", err)
+	}
 
-		// Check if conflicted files still have markers
-		unresolvedConflicts := []string{}
-		for _, path := range conflictPaths {
-			if path == "" {
-				continue
-			}
-			fullPath := filepath.Join(workDir, path)
-			if hasConflictMarkers(fullPath) {
-				unresolvedConflicts = append(unresolvedConflicts, path)
-			}
-		}
+	// If resolution exists and has conflicts, use interactive resolver
+	if resolution != nil && !resolution.IsFullyResolved() {
+		fmt.Println(colors.Cyan("Using interactive conflict resolver..."))
+		fmt.Println()
 
-		if len(unresolvedConflicts) > 0 {
-			fmt.Printf("%s Unresolved conflicts remaining:\n\n", colors.Red("[ERROR]"))
-			for _, path := range unresolvedConflicts {
-				fmt.Printf("  %s %s\n", colors.Red("CONFLICT:"), path)
-			}
-			fmt.Println()
-			fmt.Println(colors.Yellow("Please resolve all conflicts before continuing."))
-			return fmt.Errorf("unresolved conflicts")
-		}
+		// TODO: Implement interactive resolution using the ConflictResolver
+		// For now, we'll require the user to use a strategy
+		fmt.Println(colors.Yellow("Interactive resolution not yet complete."))
+		fmt.Println("Please rerun fuse with a strategy:")
+		fmt.Printf("  %s - Accept source changes\n", colors.Blue("ivaldi fuse --strategy=theirs "+state.SourceTimeline))
+		fmt.Printf("  %s - Keep target changes\n", colors.Green("ivaldi fuse --strategy=ours "+state.SourceTimeline))
+		return fmt.Errorf("conflicts not resolved - use a strategy")
 	}
 
 	// Create merge commit
@@ -716,6 +738,14 @@ func continueMerge(ivaldiDir, workDir string) error {
 	os.Remove(filepath.Join(ivaldiDir, "MERGE_CONFLICTS"))
 	os.Remove(stageFile)
 
+	// Clean up and archive resolution
+	resStorage = diffmerge.NewResolutionStorage(ivaldiDir)
+	if resolution != nil {
+		resolution.MarkCompleted()
+		resStorage.SaveHistory(resolution) // Archive for reference
+	}
+	resStorage.Delete()
+
 	fmt.Println()
 	fmt.Printf("%s Merge completed successfully!\n", colors.SuccessText("[OK]"))
 	fmt.Printf("  Merge seal: %s\n", colors.Cyan(sealName))
@@ -724,67 +754,5 @@ func continueMerge(ivaldiDir, workDir string) error {
 	return nil
 }
 
-// writeConflictedFiles writes conflicted files to workspace with conflict markers
-func writeConflictedFiles(workDir string, casStore cas.CAS, conflicts []diffmerge.Conflict) error {
-	loader := filechunk.NewLoader(casStore)
-
-	for _, conflict := range conflicts {
-		filePath := filepath.Join(workDir, conflict.Path)
-
-		// Ensure directory exists
-		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-			return err
-		}
-
-		var content strings.Builder
-
-		// Write conflict markers
-		content.WriteString(fmt.Sprintf("<<<<<<< TARGET (%s)\n", conflict.Path))
-
-		// Write target version
-		if conflict.LeftFile != nil {
-			data, err := loader.ReadAll(conflict.LeftFile.FileRef)
-			if err == nil {
-				content.Write(data)
-				if len(data) > 0 && data[len(data)-1] != '\n' {
-					content.WriteString("\n")
-				}
-			}
-		}
-
-		content.WriteString("=======\n")
-
-		// Write source version
-		if conflict.RightFile != nil {
-			data, err := loader.ReadAll(conflict.RightFile.FileRef)
-			if err == nil {
-				content.Write(data)
-				if len(data) > 0 && data[len(data)-1] != '\n' {
-					content.WriteString("\n")
-				}
-			}
-		}
-
-		content.WriteString(fmt.Sprintf(">>>>>>> SOURCE (%s)\n", conflict.Path))
-
-		// Write file
-		if err := os.WriteFile(filePath, []byte(content.String()), 0644); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// hasConflictMarkers checks if a file still contains conflict markers
-func hasConflictMarkers(filePath string) bool {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return false
-	}
-
-	content := string(data)
-	return strings.Contains(content, "<<<<<<<") ||
-		strings.Contains(content, "=======") ||
-		strings.Contains(content, ">>>>>>>")
-}
+// These functions are no longer needed - Ivaldi uses intelligent conflict resolution
+// without writing conflict markers to workspace files

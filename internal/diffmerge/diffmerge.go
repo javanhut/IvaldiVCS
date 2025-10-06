@@ -293,6 +293,124 @@ func (m *Merger) MergeWorkspaces(base, left, right wsindex.IndexRef) (*MergeResu
 	}, nil
 }
 
+// MergeWorkspacesWithStrategy performs intelligent chunk-level merge with a strategy.
+func (m *Merger) MergeWorkspacesWithStrategy(base, left, right wsindex.IndexRef, strategy StrategyType) (*MergeResult, error) {
+	loader := wsindex.NewLoader(m.CAS)
+
+	// Get all files from each version
+	baseFiles, err := m.getFilesMap(loader, base)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get base files: %w", err)
+	}
+
+	leftFiles, err := m.getFilesMap(loader, left)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get left files: %w", err)
+	}
+
+	rightFiles, err := m.getFilesMap(loader, right)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get right files: %w", err)
+	}
+
+	// Collect all paths
+	allPaths := make(map[string]bool)
+	for path := range baseFiles {
+		allPaths[path] = true
+	}
+	for path := range leftFiles {
+		allPaths[path] = true
+	}
+	for path := range rightFiles {
+		allPaths[path] = true
+	}
+
+	// Create strategy resolver
+	resolver := NewStrategyResolver(m.CAS)
+
+	var mergedFiles []wsindex.FileMetadata
+	var conflicts []Conflict
+
+	// Process each file with the strategy
+	for path := range allPaths {
+		baseFile := baseFiles[path]
+		leftFile := leftFiles[path]
+		rightFile := rightFiles[path]
+
+		// Use strategy resolver
+		result, err := resolver.Resolve(strategy, path, baseFile, leftFile, rightFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve %s: %w", path, err)
+		}
+
+		if result.Success {
+			// Successfully merged - build file metadata
+			if len(result.MergedChunks) > 0 {
+				// Rebuild file from merged chunks
+				fileRef, err := BuildMergedFile(m.CAS, result.MergedChunks, result.MergedSize)
+				if err != nil {
+					return nil, fmt.Errorf("failed to build merged file %s: %w", path, err)
+				}
+
+				// Use metadata from left or right (prefer left)
+				var metadata wsindex.FileMetadata
+				if leftFile != nil {
+					metadata = *leftFile
+				} else if rightFile != nil {
+					metadata = *rightFile
+				} else {
+					continue // Shouldn't happen, but skip if both nil
+				}
+
+				metadata.FileRef = fileRef
+				metadata.Checksum = fileRef.Hash
+				mergedFiles = append(mergedFiles, metadata)
+			}
+			// If no merged chunks, file was deleted (intentionally left out)
+		} else {
+			// Conflicts remain - convert to legacy Conflict format
+			for range result.Conflicts {
+				conflict := Conflict{
+					Type: FileFileConflict,
+					Path: path,
+				}
+
+				if baseFile != nil {
+					conflict.BaseFile = baseFile
+				}
+				if leftFile != nil {
+					conflict.LeftFile = leftFile
+				}
+				if rightFile != nil {
+					conflict.RightFile = rightFile
+				}
+
+				conflicts = append(conflicts, conflict)
+				break // Only add one conflict per file
+			}
+		}
+	}
+
+	if len(conflicts) > 0 {
+		return &MergeResult{
+			Success:   false,
+			Conflicts: conflicts,
+		}, nil
+	}
+
+	// Build merged index
+	builder := wsindex.NewBuilder(m.CAS)
+	mergedIndex, err := builder.Build(mergedFiles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build merged index: %w", err)
+	}
+
+	return &MergeResult{
+		Success:     true,
+		MergedIndex: &mergedIndex,
+	}, nil
+}
+
 // getFilesMap converts a workspace index to a map for easier processing.
 func (m *Merger) getFilesMap(loader *wsindex.Loader, index wsindex.IndexRef) (map[string]*wsindex.FileMetadata, error) {
 	if index.Count == 0 {

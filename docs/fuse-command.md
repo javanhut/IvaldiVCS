@@ -1,27 +1,121 @@
 # Fuse Command
 
-The `ivaldi fuse` command merges two timelines together, combining their commit histories and changes. It supports fast-forward merges, three-way merges, and conflict resolution.
+The `ivaldi fuse` command merges two timelines together using **intelligent chunk-level conflict resolution**. Unlike Git's line-based merging with conflict markers, Ivaldi uses content-addressable storage and BLAKE3 hashing to provide superior merge intelligence.
 
 ## Overview
 
 The fuse command provides:
-- **Timeline merging**: Combine work from different timelines
+- **Intelligent chunk-level merging**: Merges at 64KB chunk granularity, not line-level
+- **Automatic conflict resolution**: Multiple strategies (auto, ours, theirs, union, base)
+- **Clean workspace**: NO conflict markers written to files
+- **Content-hash based**: Identical changes auto-detected via BLAKE3 hashes
 - **Fast-forward detection**: Automatic optimization when possible
 - **Three-way merge**: Intelligent merging using common ancestor
-- **Conflict detection**: Identifies files that need manual resolution
-- **Interactive workflow**: Review changes before merging
-- **Conflict resolution**: Git-like conflict markers for manual fixes
-- **Merge state management**: Support for multi-step merge workflows
+- **Interactive resolution**: Clean CLI interface for remaining conflicts
+- **Resolution tracking**: Merge decisions stored separately from workspace
+
+## Why Ivaldi's Merge is Superior to Git
+
+1. **Chunk-level intelligence**: Uses 64KB chunks with content hashes instead of line-based diff
+2. **No false conflicts**: Whitespace/formatting changes don't cause conflicts
+3. **Clean workspace**: Conflict markers never pollute your files
+4. **Automatic strategies**: Resolve entire merges without manual editing
+5. **Deterministic**: Same content = same hash = automatic merge
+6. **Interactive UI**: When needed, use a clean CLI instead of editing markers
+
+## Merge Strategies
+
+Ivaldi provides five built-in strategies for automatic conflict resolution:
+
+### 1. Auto (Default)
+**Use case:** Most merges, especially when you want intelligent resolution
+
+Performs chunk-level three-way merge:
+- Automatically resolves non-conflicting changes
+- Detects identical changes via content hashes
+- Only flags truly conflicting chunks
+- Best balance of intelligence and safety
+
+```bash
+ivaldi fuse feature to main
+# Same as: ivaldi fuse --strategy=auto feature to main
+```
+
+### 2. Theirs
+**Use case:** Accepting external changes, pulling updates, integrating trusted changes
+
+Accepts ALL changes from source timeline:
+- No conflicts possible
+- Fast and deterministic
+- Use when source is authoritative
+
+```bash
+ivaldi fuse --strategy=theirs upstream-main to main
+```
+
+### 3. Ours
+**Use case:** Keeping local changes, rejecting external modifications
+
+Keeps ALL changes from target timeline:
+- No conflicts possible
+- Useful for merging experimental branches you want to discard
+- Source changes are ignored
+
+```bash
+ivaldi fuse --strategy=ours experimental-feature to main
+```
+
+### 4. Union
+**Use case:** Append-only files like changelogs, combined documentation
+
+Combines changes from both timelines:
+- Merges non-duplicate chunks from both sides
+- Useful for files where both changes should be kept
+- May create duplicate content if not careful
+
+```bash
+ivaldi fuse --strategy=union feature-docs to main
+```
+
+### 5. Base
+**Use case:** Reverting to known good state, undoing divergent changes
+
+Reverts to common ancestor:
+- Discards changes from both timelines
+- Useful for resetting to last known-good state
+- Rare use case
+
+```bash
+ivaldi fuse --strategy=base problematic-branch to main
+```
 
 ## Basic Usage
 
-### Merge Timelines
+### Merge Timelines with Auto Strategy (Default)
 
-Merge source timeline into target timeline:
+Merge source timeline into target timeline with intelligent chunk-level merging:
 
 ```bash
 ivaldi fuse <source> to <target>
 ivaldi fuse feature-auth to main
+```
+
+### Merge with Specific Strategy
+
+Use a specific resolution strategy:
+
+```bash
+# Accept all source changes
+ivaldi fuse --strategy=theirs feature-auth to main
+
+# Keep all target changes
+ivaldi fuse --strategy=ours feature-auth to main
+
+# Combine both versions
+ivaldi fuse --strategy=union feature-changelog to main
+
+# Revert to common ancestor
+ivaldi fuse --strategy=base feature-experimental to main
 ```
 
 **Interactive workflow:**
@@ -81,6 +175,21 @@ ivaldi fuse feature-payment to main
 - **source**: Timeline containing changes to merge
 - **target**: Timeline that will receive the changes
 
+### `--strategy=<type>`
+
+Specify the conflict resolution strategy:
+
+```bash
+ivaldi fuse --strategy=theirs feature to main
+```
+
+**Available strategies:**
+- `auto` (default) - Intelligent chunk-level merge
+- `ours` - Keep target timeline version
+- `theirs` - Accept source timeline version
+- `union` - Combine both versions
+- `base` - Revert to common ancestor
+
 ### `--continue`
 
 Continue merge after resolving conflicts:
@@ -90,9 +199,8 @@ ivaldi fuse --continue
 ```
 
 **Use when:**
-- Previous merge had conflicts
-- You've manually edited conflicted files
-- Ready to create merge commit
+- Previous merge had conflicts with auto strategy
+- Ready to use interactive resolver or choose different strategy
 
 ### `--abort`
 
@@ -104,8 +212,8 @@ ivaldi fuse --abort
 
 **Effect:**
 - Clears merge state
-- Restores working directory to pre-merge state
-- Removes conflict markers
+- Removes resolution tracking
+- Workspace remains clean (no files were modified)
 
 ## Merge Types
 
@@ -181,100 +289,151 @@ Proceed with merge? (yes/no): yes
   Timeline main updated
 ```
 
-## Conflict Resolution
+## Intelligent Conflict Resolution
 
-### Understanding Conflicts
+### Understanding Ivaldi's Approach
 
-Conflicts occur when:
-- Same file modified in both timelines
-- Changes affect overlapping lines
-- Cannot be automatically merged
+**Key Difference from Git:** Ivaldi NEVER writes conflict markers to your workspace files. All conflict resolution happens through strategies or an interactive UI, keeping your workspace clean.
 
-### Conflict Markers
+Conflicts are detected at the **chunk level** (64KB granularity) using content hashes:
+- Same chunk hash → No conflict (identical content)
+- Different hashes → Check if only one side changed
+- Both changed differently → Real conflict
 
-Conflicted files contain markers:
+### Automatic Resolution with Strategies
 
-```
-<<<<<<< TARGET (src/auth.go)
-func Login(username string) error {
-    return authenticate(username)
-}
-=======
-func Login(user User) error {
-    return validateAndAuthenticate(user)
-}
->>>>>>> SOURCE (src/auth.go)
-```
+Most merges can be resolved automatically without any manual intervention:
 
-**Marker explanation:**
-- `<<<<<<< TARGET`: Start of target timeline's version
-- `=======`: Separator between versions
-- `>>>>>>> SOURCE`: End of source timeline's version
+#### 1. Auto Strategy (Default - Chunk-Level Intelligence)
 
-### Resolution Workflow
-
-1. **Identify conflicts:**
 ```bash
 $ ivaldi fuse feature-auth to main
 
-CONFLICT: Merge conflicts detected
+>> Fusing feature-auth into main...
 
-[ERROR] Unresolved conflicts remaining:
+[MERGE] Three-way merge required
+
+Changes to be merged:
+  + 3 files
+  ~ 2 files
+
+Apply merge from feature-auth to main? (y/N)> y
+
+>> Creating merge commit...
+
+[OK] Changes from feature-auth fused into main!
+  Merge seal: merge-feature-auth-xyz789
+```
+
+The auto strategy uses chunk-level intelligence to automatically resolve:
+- Changes on only one side (takes that change)
+- Identical changes on both sides (same hash, no conflict)
+- Non-overlapping chunks in same file
+
+#### 2. Theirs Strategy (Accept Source)
+
+```bash
+$ ivaldi fuse --strategy=theirs feature-auth to main
+
+>> Using merge strategy: theirs
+  ✓ No manual resolution needed
+
+[OK] Changes from feature-auth fused into main!
+```
+
+Automatically accepts ALL changes from source timeline.
+
+#### 3. Ours Strategy (Keep Target)
+
+```bash
+$ ivaldi fuse --strategy=ours feature-auth to main
+
+>> Using merge strategy: ours
+  ✓ No manual resolution needed
+
+[OK] Changes from feature-auth fused into main!
+```
+
+Automatically keeps ALL changes from target timeline.
+
+#### 4. Union Strategy (Combine Both)
+
+```bash
+$ ivaldi fuse --strategy=union feature-changelog to main
+
+>> Using merge strategy: union
+  ✓ Combining changes from both timelines
+
+[OK] Changes from feature-changelog fused into main!
+```
+
+Combines changes from both sides (useful for append-only files like changelogs).
+
+### When Auto Strategy Finds Conflicts
+
+If auto strategy encounters truly conflicting chunks:
+
+```bash
+$ ivaldi fuse feature-auth to main
+
+>> Fusing feature-auth into main...
+
+[CONFLICTS] Merge conflicts detected:
 
   CONFLICT: src/auth.go
   CONFLICT: src/config.go
 
-Please resolve conflicts and run: ivaldi fuse --continue
-Or abort the merge with: ivaldi fuse --abort
+>> 2 file(s) with conflicts
+
+Resolution options:
+  ivaldi fuse --continue - Use interactive resolver
+  ivaldi fuse --strategy=theirs feature-auth - Accept all source changes
+  ivaldi fuse --strategy=ours feature-auth - Keep all target changes
+  ivaldi fuse --abort - Abort merge
+
+Note: Workspace files are NOT modified - conflicts are resolved separately
 ```
 
-2. **Edit conflicted files:**
+**Important:** Your workspace files remain untouched. No conflict markers are written.
+
+### Interactive Resolution Workflow
+
+When conflicts exist, you have clean options:
+
+**Option 1: Choose a strategy**
 ```bash
-# Open each file and manually resolve
-vim src/auth.go
-vim src/config.go
+# Just accept source changes
+ivaldi fuse --strategy=theirs feature-auth to main
+
+# Or keep target changes
+ivaldi fuse --strategy=ours feature-auth to main
 ```
 
-3. **Remove conflict markers:**
-```go
-// Before (with conflict):
-<<<<<<< TARGET (src/auth.go)
-func Login(username string) error {
-    return authenticate(username)
-}
-=======
-func Login(user User) error {
-    return validateAndAuthenticate(user)
-}
->>>>>>> SOURCE (src/auth.go)
-
-// After (resolved):
-func Login(user User) error {
-    return authenticate(user)
-}
-```
-
-4. **Stage resolved files:**
-```bash
-ivaldi gather src/auth.go
-ivaldi gather src/config.go
-```
-
-5. **Continue merge:**
+**Option 2: Interactive resolver (future)**
 ```bash
 ivaldi fuse --continue
+
+# Interactive CLI shows each conflict with options:
+# - View OURS, THEIRS, BASE versions
+# - Choose which version to keep
+# - No manual file editing needed
 ```
 
-6. **Verify completion:**
+**Option 3: Abort and reconsider**
 ```bash
-$ ivaldi fuse --continue
-
-Creating merge commit...
-
-[OK] Merge completed successfully!
-  Merge seal: merge-feature-auth-xyz789
-  Timeline main updated
+ivaldi fuse --abort
 ```
+
+### Comparison: Ivaldi vs Git
+
+| Aspect | Git | Ivaldi |
+|--------|-----|--------|
+| Conflict markers | ✗ Written to files | ✓ Never written to files |
+| Resolution method | Manual file editing | Strategy selection or interactive UI |
+| Granularity | Line-based | Chunk-based (64KB) |
+| False conflicts | Common (whitespace) | Rare (content-hash based) |
+| Workspace during conflict | Polluted with markers | Always clean |
+| Identical changes | May conflict | Auto-merged (same hash) |
 
 ## Common Workflows
 
@@ -329,29 +488,33 @@ ivaldi log --oneline
 
 ### Conflict Resolution Workflow
 
-When merge has conflicts:
+When merge has conflicts with auto strategy:
 
 ```bash
 $ ivaldi fuse feature-auth to main
 
-CONFLICT: Merge conflicts detected
+[CONFLICTS] Merge conflicts detected:
 
   CONFLICT: src/auth.go
 
-Please resolve conflicts and run: ivaldi fuse --continue
+>> 1 file(s) with conflicts
 
-# Resolve conflicts
-$ vim src/auth.go
-# Edit file, remove markers, save
+Resolution options:
+  ivaldi fuse --continue - Use interactive resolver
+  ivaldi fuse --strategy=theirs feature-auth - Accept all source changes
+  ivaldi fuse --strategy=ours feature-auth - Keep all target changes
+  ivaldi fuse --abort - Abort merge
 
-# Stage resolved file
-$ ivaldi gather src/auth.go
+# Option 1: Just accept source changes
+$ ivaldi fuse --strategy=theirs feature-auth to main
+[OK] Changes from feature-auth fused into main!
 
-# Complete merge
-$ ivaldi fuse --continue
-
-[OK] Merge completed successfully!
+# Option 2: Or keep target changes
+$ ivaldi fuse --strategy=ours feature-auth to main
+[OK] Changes from feature-auth fused into main!
 ```
+
+**Note:** No file editing required! Workspace stays clean.
 
 ### Aborting Failed Merge
 

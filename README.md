@@ -190,6 +190,38 @@ ivaldi upload                  # Push to GitHub
 - Auto-shelving preserves uncommitted changes
 - Minimal file system operations during switches
 
+## Migrating from Git
+
+Here's how to translate a common Git workflow to Ivaldi:
+
+```bash
+# Git commands → Ivaldi commands
+
+git init                                                             → ivaldi forge
+git add README.md                                                    → ivaldi gather README.md
+git commit -m "first commit"                                         → ivaldi seal -m "first commit"
+git branch -M main                                                   → (not needed - main is default)
+git remote add origin https://github.com/javanhut/TestRepoIvaldi.git → ivaldi portal add origin https://github.com/javanhut/TestRepoIvaldi.git
+git push -u origin main                                              → ivaldi upload
+```
+
+```bash
+#Initialize empty repository
+
+ivaldi forge
+ivaldi gather README.md
+ivaldi seal "first commit"
+ivaldi portal add javanhut/TestRepoIvaldi
+ivaldi upload
+```
+
+#### Differences Ivaldi has: 
+Ivaldi sets main an default branch on initialization
+Gather can be use specifically or empty for all file added
+Sealing is like sealing a letter you have the message no need to specific it is.
+Portals don't need a https://github.com/owner/Repo.git the owner and repo are enough.
+You upload the code to github with upload keyword not a push.
+
 ## Comparison with Git
 
 | Feature | Git | Ivaldi |
