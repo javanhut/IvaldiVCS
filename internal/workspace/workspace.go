@@ -117,7 +117,7 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 			return err
 		}
 
-		if strings.HasPrefix(relPath, ".ivaldi") {
+		if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
 			return nil
 		}
 

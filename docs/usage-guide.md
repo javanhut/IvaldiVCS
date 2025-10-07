@@ -77,9 +77,17 @@ ivaldi gather file1.txt src/file2.js
 # Stage all files in directory
 ivaldi gather .
 
-# Stage all modified files
+# Stage all modified files (prompts for hidden files)
 ivaldi gather
+
+# Stage all files without prompting (shows warnings)
+ivaldi gather --allow-all
 ```
+
+**Security Features:**
+- `.env` and `.venv` files are auto-excluded for security
+- Hidden files (starting with `.`) require confirmation (except `.ivaldiignore`)
+- Use `--allow-all` to skip prompts in automation/scripts
 
 ### 3. Create Commit (Seal)
 
@@ -218,7 +226,26 @@ This prevents work loss and eliminates manual stashing.
 
 ### Ignore Files
 
-Create `.ivaldiignore` file (similar to `.gitignore`):
+Ivaldi supports excluding files and directories from version control using the `.ivaldiignore` file, similar to `.gitignore`.
+
+#### Using the Exclude Command
+
+```bash
+# Exclude specific files or patterns
+ivaldi exclude build/ dist/ *.exe
+
+# Exclude temporary files
+ivaldi exclude *.tmp .DS_Store
+
+# Exclude directories
+ivaldi exclude node_modules/ .cache/
+```
+
+The `ivaldi exclude` command automatically creates or appends to `.ivaldiignore`.
+
+#### Manual .ivaldiignore Creation
+
+You can also manually create `.ivaldiignore`:
 ```
 # Ignore build artifacts
 build/
@@ -228,7 +255,36 @@ dist/
 # Ignore temporary files
 *.tmp
 .DS_Store
+
+# Ignore directories
+node_modules/
+.cache/
+
+# Wildcard patterns
+**/*.log
+test/**/*.tmp
 ```
+
+#### Security Features
+
+Ivaldi includes built-in protections against accidentally committing sensitive files:
+
+**Auto-Excluded Files:**
+- `.env`, `.env.*` - Environment files with secrets
+- `.venv`, `.venv/` - Python virtual environments
+
+**Interactive Prompts:**
+- Hidden files (starting with `.`) require confirmation before gathering
+- `.ivaldiignore` itself never prompts and can always be gathered
+- Use `--allow-all` flag to skip prompts (useful for automation)
+
+#### Important Notes
+
+- **The `.ivaldiignore` file itself is NEVER ignored** and can always be gathered and committed
+- Ignored files are excluded from `ivaldi gather` operations, even if explicitly specified
+- Patterns support glob matching including wildcards (`*`, `**`)
+- Directory patterns should end with `/` for clarity
+- Empty lines and lines starting with `#` are treated as comments
 
 ## Command Reference
 
@@ -244,10 +300,12 @@ dist/
 
 | Command | Description |
 |---------|-------------|
-| `ivaldi gather [files...]` | Stage files for commit |
+| `ivaldi gather [files...]` | Stage files for commit (respects .ivaldiignore, prompts for dot files) |
+| `ivaldi gather --allow-all` | Stage all files without prompts (shows warnings) |
 | `ivaldi seal <message>` | Create commit with auto-generated seal name |
 | `ivaldi seals list` | List all seals with their names |
 | `ivaldi seals show <name\|hash>` | Show detailed seal information |
+| `ivaldi exclude <patterns...>` | Add patterns to .ivaldiignore file |
 
 ### Timeline Operations
 
