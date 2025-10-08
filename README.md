@@ -93,6 +93,8 @@ Remote operations are designed for selective collaboration:
 
 ## Documentation
 
+- **[Documentation Wiki](https://javanhut.github.io/IvaldiVCS)**
+
 ### Getting Started
 - **[Usage Guide](docs/usage-guide.md)**: Comprehensive guide to using Ivaldi VCS
 - **[Configuration System](docs/config-system.md)**: User and repository configuration
