@@ -1,0 +1,25 @@
+title: Ivaldi VCS Documentation
+description: Modern version control system with timeline-based branching and GitHub integration
+theme: jekyll-theme-cayman
+baseurl: "/IvaldiVCS"
+url: "https://javanhut.github.io"
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+plugins:
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: true
+
+collections:
+  commands:
+    output: true
+    permalink: /commands/:name/
+  guides:
+    output: true
+    permalink: /guides/:name/
