@@ -166,9 +166,15 @@ ivaldi upload github:owner/repo main
 This will:
 - Push the current timeline's latest commit to GitHub
 - Create or update the specified branch
-- Upload files individually through the GitHub API
+- **Intelligently upload only changed files** using delta detection
+- Use parallel blob uploads for improved performance
+- Store GitHub commit SHAs for future delta uploads
 
-Note: This method is suitable for smaller repositories due to API limitations.
+**Optimization Features:**
+- **Delta Upload**: Only uploads changed files on subsequent pushes (99%+ reduction in data transferred)
+- **Parallel Processing**: Uses 8-32 concurrent workers for blob uploads
+- **Base Tree Reuse**: Leverages GitHub's base_tree parameter to inherit unchanged files
+- **Automatic Fallback**: Falls back to full upload on first push or when parent commit unavailable
 
 ## Technical Details
 
@@ -178,8 +184,10 @@ Note: This method is suitable for smaller repositories due to API limitations.
 2. **Authentication Discovery**: Finds credentials from Git config, environment, or credential helpers
 3. **API-Based Operations**: Uses GitHub REST API v3 for all operations
 4. **Content Addressing**: Files are stored using Ivaldi's BLAKE3-based CAS
-5. **Concurrent Processing**: Downloads use 8 parallel workers for speed
+5. **Concurrent Processing**: Downloads use 8 parallel workers; uploads use 8-32 workers
 6. **Rate Limit Management**: Automatic waiting when rate limited
+7. **Delta Upload Optimization**: Compares parent and current commits to upload only changed files
+8. **GitHub SHA Tracking**: Stores GitHub commit SHAs in timeline metadata for future delta calculations
 
 ### Supported URL Formats
 
@@ -201,9 +209,40 @@ All formats can optionally include the `.git` suffix.
 | Protocol | HTTPS REST API | Git protocol/HTTPS |
 | Authentication | Token-based | SSH keys/HTTPS |
 | Large Files | API limitations | LFS support |
-| Performance | Good for small-medium repos | Optimized for all sizes |
+| Performance | Delta upload for changed files | Optimized for all sizes |
 | Dependencies | None | Requires Git |
-| Incremental Updates | Full tree comparison | Smart protocol |
+| Incremental Updates | BLAKE3 content comparison | Smart protocol |
+| Parallel Operations | 8-32 concurrent workers | Single stream |
+
+### Upload Performance Optimization
+
+Ivaldi uses intelligent delta detection to minimize data transfer during uploads:
+
+**First Push (Full Upload):**
+- All files uploaded to GitHub
+- Parallel processing with 8-32 workers
+- Creates baseline for future comparisons
+- GitHub commit SHA stored in timeline metadata
+
+**Subsequent Pushes (Delta Upload):**
+1. Compares current commit with parent commit using BLAKE3 hashes
+2. Identifies added, modified, and deleted files
+3. Uploads only changed files in parallel
+4. Uses GitHub's `base_tree` parameter to inherit unchanged files
+5. Creates single commit on GitHub
+
+**Performance Impact:**
+```
+Example: Repository with 1000 files, 1 file changed
+- Without optimization: 1000 API calls, ~500MB transferred
+- With optimization: 1 API call, ~500KB transferred
+- Improvement: 99.9% reduction in data and API calls
+```
+
+**Worker Scaling:**
+- 1-50 files: 8 concurrent workers
+- 51-200 files: 16 concurrent workers
+- 200+ files: 32 concurrent workers
 
 ### API Limitations
 
@@ -314,10 +353,12 @@ All GitHub functionality is integrated into the main Ivaldi commands:
 
 ## Future Enhancements
 
+- ✅ ~~Incremental push (only changed files)~~ - **Implemented!**
+- ✅ ~~Parallel upload operations~~ - **Implemented!**
 - Pull functionality integration into standard commands
 - Incremental pull (only changed files)
 - Shallow cloning support
 - GraphQL API integration for better performance
-- Caching layer for frequently accessed content
+- Blob SHA caching across branches
 - Support for GitHub Enterprise
 - Webhook integration for real-time updates

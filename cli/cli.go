@@ -57,6 +57,20 @@ func init() {
 	// Remote timeline discovery and harvesting commands
 	rootCmd.AddCommand(scoutCmd)
 	rootCmd.AddCommand(harvestCmd)
+
+	// Configuration command
+	rootCmd.AddCommand(configCmd)
+
+	// History and comparison commands
+	rootCmd.AddCommand(logCmd)
+	rootCmd.AddCommand(diffCmd)
+	rootCmd.AddCommand(resetCmd)
+
+	// Merge command
+	rootCmd.AddCommand(fuseCmd)
+
+	// Time travel command
+	rootCmd.AddCommand(travelCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {
@@ -101,7 +115,7 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 
 			// Convert Git objects with shared database connection using concurrent workers
 			log.Println("Converting Git objects to Ivaldi format...")
-			gitResult, err := converter.ConvertGitObjectsToIvaldiConcurrent(".git", ivaldiDir, 8)
+			gitResult, err := converter.ConvertGitObjectsToIvaldiConcurrent(".git", ivaldiDir, 16)
 			if err != nil {
 				log.Printf("Warning: Failed to convert Git objects: %v", err)
 			} else {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -311,6 +312,14 @@ var downloadCmd = &cobra.Command{
 	},
 }
 
+// Auto-excluded patterns that are always ignored for security
+var autoExcludePatterns = []string{
+	".env",
+	".env.*",
+	".venv",
+	".venv/",
+}
+
 var gatherCmd = &cobra.Command{
 	Use:   "gather [files...]",
 	Short: "Stage files for the next seal/commit",
@@ -325,6 +334,18 @@ var gatherCmd = &cobra.Command{
 		workDir, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+
+		// Get --allow-all flag
+		allowAll, err := cmd.Flags().GetBool("allow-all")
+		if err != nil {
+			return fmt.Errorf("failed to get allow-all flag: %w", err)
+		}
+
+		// Load ignore patterns from .ivaldiignore
+		ignorePatterns, err := loadIgnorePatternsForGather(workDir)
+		if err != nil {
+			log.Printf("Warning: Failed to load ignore patterns: %v", err)
 		}
 
 		// Create staging area directory
@@ -343,19 +364,44 @@ var gatherCmd = &cobra.Command{
 					return err
 				}
 
-				// Skip directories and hidden files/dirs
-				if info.IsDir() || filepath.Base(path)[0] == '.' {
-					return nil
-				}
-
 				// Get relative path
 				relPath, err := filepath.Rel(workDir, path)
 				if err != nil {
 					return err
 				}
 
+				// Skip directories
+				if info.IsDir() {
+					return nil
+				}
+
 				// Skip .ivaldi directory
-				if strings.HasPrefix(relPath, ".ivaldi") {
+				if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
+					return nil
+				}
+
+				// Check if file is auto-excluded (.env, .venv, etc.)
+				if isAutoExcluded(relPath) {
+					log.Printf("Auto-excluded for security: %s", relPath)
+					return nil
+				}
+
+				// Skip hidden files/dirs EXCEPT .ivaldiignore
+				if filepath.Base(path)[0] == '.' && relPath != ".ivaldiignore" {
+					// Prompt user for dot files unless --allow-all is set
+					if !allowAll {
+						if shouldGatherDotFile(relPath) {
+							filesToGather = append(filesToGather, relPath)
+						}
+						return nil
+					} else {
+						// With --allow-all, still warn about dot files
+						fmt.Printf("Warning: Gathering hidden file: %s\n", relPath)
+					}
+				}
+
+				// Skip ignored files (but never ignore .ivaldiignore itself)
+				if isFileIgnored(relPath, ignorePatterns) {
 					return nil
 				}
 
@@ -404,7 +450,31 @@ var gatherCmd = &cobra.Command{
 						}
 
 						// Skip .ivaldi directory
-						if strings.HasPrefix(relPath, ".ivaldi") {
+						if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
+							return nil
+						}
+
+						// Check if file is auto-excluded
+						if isAutoExcluded(relPath) {
+							log.Printf("Auto-excluded for security: %s", relPath)
+							return nil
+						}
+
+						// Check for dot files (except .ivaldiignore)
+						if strings.Contains(path, "/.") && relPath != ".ivaldiignore" {
+							if !allowAll {
+								if shouldGatherDotFile(relPath) {
+									filesToGather = append(filesToGather, relPath)
+								}
+								return nil
+							} else {
+								fmt.Printf("Warning: Gathering hidden file: %s\n", relPath)
+							}
+						}
+
+						// Skip ignored files (but never ignore .ivaldiignore itself)
+						if isFileIgnored(relPath, ignorePatterns) {
+							log.Printf("Skipping ignored file: %s", relPath)
 							return nil
 						}
 
@@ -419,10 +489,33 @@ var gatherCmd = &cobra.Command{
 					relPath, err := filepath.Rel(workDir, arg)
 					if err != nil {
 						// If we can't get relative path, use as-is
-						filesToGather = append(filesToGather, arg)
-					} else {
-						filesToGather = append(filesToGather, relPath)
+						relPath = arg
 					}
+
+					// Check if file is auto-excluded
+					if isAutoExcluded(relPath) {
+						log.Printf("Warning: File '%s' is auto-excluded for security, skipping", relPath)
+						continue
+					}
+
+					// Check for dot files (except .ivaldiignore)
+					if (filepath.Base(relPath)[0] == '.' || strings.Contains(relPath, "/.")) && relPath != ".ivaldiignore" {
+						if !allowAll {
+							if !shouldGatherDotFile(relPath) {
+								continue
+							}
+						} else {
+							fmt.Printf("Warning: Gathering hidden file: %s\n", relPath)
+						}
+					}
+
+					// Check if file is ignored
+					if isFileIgnored(relPath, ignorePatterns) {
+						log.Printf("Warning: File '%s' is in .ivaldiignore, skipping", relPath)
+						continue
+					}
+
+					filesToGather = append(filesToGather, relPath)
 				}
 			}
 		}
@@ -556,18 +649,46 @@ var sealCmd = &cobra.Command{
 
 		// Get workspace files
 		wsLoader := wsindex.NewLoader(casStore)
-		workspaceFiles, err := wsLoader.ListAll(wsIndex)
+		allWorkspaceFiles, err := wsLoader.ListAll(wsIndex)
 		if err != nil {
 			return fmt.Errorf("failed to list workspace files: %w", err)
 		}
 
+		// Filter workspace files to only include staged files
+		stagedFileMap := make(map[string]bool)
+		for _, file := range stagedFiles {
+			stagedFileMap[file] = true
+		}
+
+		var workspaceFiles []wsindex.FileMetadata
+		for _, file := range allWorkspaceFiles {
+			if stagedFileMap[file.Path] {
+				workspaceFiles = append(workspaceFiles, file)
+			}
+		}
+
 		fmt.Printf("Found %d files in workspace\n", len(workspaceFiles))
 
+		// Get author from config
+		author, err := getAuthorFromConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get author from config: %w\nPlease set user.name and user.email: ivaldi config user.name \"Your Name\"", err)
+		}
+
+		// Get parent commit from current timeline
+		var parents []cas.Hash
+		timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
+		if err == nil && timeline.Blake3Hash != [32]byte{} {
+			// Timeline has a previous commit, use it as parent
+			var parentHash cas.Hash
+			copy(parentHash[:], timeline.Blake3Hash[:])
+			parents = append(parents, parentHash)
+		}
+
 		// Create commit object
-		author := "Ivaldi User <user@example.com>" // TODO: get from config
 		commitObj, err := commitBuilder.CreateCommit(
 			workspaceFiles,
-			nil, // TODO: get parent commits
+			parents,
 			author,
 			author,
 			message,
@@ -617,6 +738,140 @@ var sealCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func init() {
+	gatherCmd.Flags().BoolP("allow-all", "a", false, "Gather all files including dot files without prompting (shows warnings)")
+}
+
+// isAutoExcluded checks if a file matches auto-exclude patterns (.env, .venv, etc.)
+func isAutoExcluded(path string) bool {
+	baseName := filepath.Base(path)
+
+	for _, pattern := range autoExcludePatterns {
+		// Handle directory patterns
+		if strings.HasSuffix(pattern, "/") {
+			dirPattern := strings.TrimSuffix(pattern, "/")
+			if strings.HasPrefix(path, dirPattern+"/") || baseName == dirPattern {
+				return true
+			}
+		}
+
+		// Try matching the basename
+		if matched, _ := filepath.Match(pattern, baseName); matched {
+			return true
+		}
+
+		// Try matching the full path
+		if matched, _ := filepath.Match(pattern, path); matched {
+			return true
+		}
+	}
+
+	return false
+}
+
+// shouldGatherDotFile prompts the user whether to gather a dot file
+// Returns true if user wants to gather the file
+func shouldGatherDotFile(path string) bool {
+	fmt.Printf("\n%s '%s' is a hidden file.\n", colors.Yellow("Warning:"), colors.Bold(path))
+	fmt.Print("Do you want to gather this file? (y/N): ")
+
+	var response string
+	fmt.Scanln(&response)
+
+	response = strings.ToLower(strings.TrimSpace(response))
+	if response == "y" || response == "yes" {
+		fmt.Printf("%s Gathering: %s\n", colors.Green("✓"), path)
+		return true
+	}
+
+	fmt.Printf("%s Skipped: %s\n", colors.Gray("✗"), path)
+	return false
+}
+
+// loadIgnorePatternsForGather loads patterns from .ivaldiignore file
+func loadIgnorePatternsForGather(workDir string) ([]string, error) {
+	ignoreFile := filepath.Join(workDir, ".ivaldiignore")
+	if _, err := os.Stat(ignoreFile); os.IsNotExist(err) {
+		return []string{}, nil // No ignore file
+	}
+
+	file, err := os.Open(ignoreFile)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var patterns []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip empty lines and comments
+		if line != "" && !strings.HasPrefix(line, "#") {
+			patterns = append(patterns, line)
+		}
+	}
+
+	return patterns, scanner.Err()
+}
+
+// isFileIgnored checks if a file path matches any ignore patterns
+// IMPORTANT: .ivaldiignore itself is NEVER ignored
+func isFileIgnored(path string, patterns []string) bool {
+	// Never ignore .ivaldiignore itself
+	if path == ".ivaldiignore" || filepath.Base(path) == ".ivaldiignore" {
+		return false
+	}
+
+	for _, pattern := range patterns {
+		// Handle directory patterns (patterns ending with /)
+		if strings.HasSuffix(pattern, "/") {
+			dirPattern := strings.TrimSuffix(pattern, "/")
+			// Check if the path is within this directory
+			if strings.HasPrefix(path, dirPattern+"/") || path == dirPattern {
+				return true
+			}
+		}
+
+		// Try matching the full path
+		if matched, _ := filepath.Match(pattern, path); matched {
+			return true
+		}
+
+		// Try matching just the basename
+		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+			return true
+		}
+
+		// Handle patterns with directory separators
+		if strings.Contains(pattern, "/") {
+			if matched, _ := filepath.Match(pattern, path); matched {
+				return true
+			}
+		}
+
+		// Handle wildcards in directory paths (e.g., **/*.log)
+		if strings.Contains(pattern, "**") {
+			// Convert ** pattern to a simpler check
+			parts := strings.Split(pattern, "**")
+			if len(parts) == 2 {
+				prefix := strings.TrimPrefix(parts[0], "/")
+				suffix := strings.TrimPrefix(parts[1], "/")
+
+				if prefix != "" && !strings.HasPrefix(path, prefix) {
+					continue
+				}
+
+				if suffix != "" {
+					if matched, _ := filepath.Match(suffix, filepath.Base(path)); matched {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 var excludeCommand = &cobra.Command{

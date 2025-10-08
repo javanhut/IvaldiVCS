@@ -55,7 +55,7 @@ ivaldi portal add github:myuser/myproject
 **Example:**
 ```bash
 $ ivaldi portal add myuser/awesome-project
-✓ Added GitHub repository connection: myuser/awesome-project
+[OK] Added GitHub repository connection: myuser/awesome-project
 ```
 
 ### `ivaldi portal remove`
@@ -74,7 +74,7 @@ ivaldi portal remove
 **Example:**
 ```bash
 $ ivaldi portal remove
-✓ Removed GitHub repository connection: myuser/myproject
+[OK] Removed GitHub repository connection: myuser/myproject
 You can now use 'ivaldi portal add owner/repo' to configure a new connection.
 ```
 

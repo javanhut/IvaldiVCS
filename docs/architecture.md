@@ -18,10 +18,10 @@ Located in `internal/cas/`, the CAS system is the foundation of Ivaldi's object 
 #### Implementation:
 ```
 CAS Interface:
-├── Put(data []byte) → Hash
-├── Get(hash Hash) → []byte
-├── Has(hash Hash) → bool
-└── Delete(hash Hash) → error
+- Put(data []byte) -> Hash
+- Get(hash Hash) -> []byte
+- Has(hash Hash) -> bool
+- Delete(hash Hash) -> error
 ```
 
 ### 2. File Chunking System
@@ -154,41 +154,41 @@ Uses BoltDB for persistent storage of metadata.
 
 ```
 1. User runs 'ivaldi gather files...'
-   ├─→ Files listed in .ivaldi/stage/files
+   -> Files listed in .ivaldi/stage/files
 
 2. User runs 'ivaldi seal "message"'
-   ├─→ Scan workspace files
-   ├─→ Create file chunks (CAS)
-   ├─→ Build HAMT directory tree
-   ├─→ Create commit object
-   ├─→ Append to MMR
-   └─→ Update timeline reference
+   -> Scan workspace files
+   -> Create file chunks (CAS)
+   -> Build HAMT directory tree
+   -> Create commit object
+   -> Append to MMR
+   -> Update timeline reference
 ```
 
 ### Switching Timelines
 
 ```
 1. User runs 'ivaldi timeline switch feature'
-   ├─→ Save current workspace state
-   ├─→ Auto-shelf uncommitted changes
-   ├─→ Read target timeline commit
-   ├─→ Extract file tree from commit
-   ├─→ Compute workspace diff
-   ├─→ Apply file changes
-   └─→ Restore auto-shelved files
+   -> Save current workspace state
+   -> Auto-shelf uncommitted changes
+   -> Read target timeline commit
+   -> Extract file tree from commit
+   -> Compute workspace diff
+   -> Apply file changes
+   -> Restore auto-shelved files
 ```
 
 ### Harvesting Remote Timelines
 
 ```
 1. User runs 'ivaldi harvest branch-name'
-   ├─→ Fetch branch info from GitHub
-   ├─→ Create temporary workspace
-   ├─→ Download files via GitHub API
-   ├─→ Build Ivaldi objects (chunks, trees)
-   ├─→ Create commit in MMR
-   ├─→ Update timeline reference
-   └─→ Clean up temp workspace
+   -> Fetch branch info from GitHub
+   -> Create temporary workspace
+   -> Download files via GitHub API
+   -> Build Ivaldi objects (chunks, trees)
+   -> Create commit in MMR
+   -> Update timeline reference
+   -> Clean up temp workspace
 ```
 
 ## Storage Format

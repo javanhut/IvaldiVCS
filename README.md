@@ -93,12 +93,25 @@ Remote operations are designed for selective collaboration:
 
 ## Documentation
 
+### Getting Started
 - **[Usage Guide](docs/usage-guide.md)**: Comprehensive guide to using Ivaldi VCS
+- **[Configuration System](docs/config-system.md)**: User and repository configuration
+
+### Core Features
 - **[Architecture](docs/architecture.md)**: Technical details about how Ivaldi works
 - **[Seal Names](docs/seal-names.md)**: Human-friendly commit naming system
-- **[Scout & Harvest](docs/scout-harvest.md)**: Remote timeline operations
 - **[Timeline Branching](docs/timeline-branching.md)**: Advanced branching features
+
+### Commands
+- **[Config Command](docs/config-system.md)**: Configure user settings and preferences
+- **[Log Command](docs/log-command.md)**: View commit history
+- **[Diff Command](docs/diff-command.md)**: Compare changes between commits
+- **[Reset Command](docs/reset-command.md)**: Unstage files and reset changes
+- **[Fuse Command](docs/fuse-command.md)**: Merge timelines together
 - **[Whereami Command](docs/whereami-command.md)**: Current timeline information
+
+### Remote Operations
+- **[Scout & Harvest](docs/scout-harvest.md)**: Remote timeline operations
 - **[GitHub Integration](docs/github-integration.md)**: GitHub synchronization
 - **[Portal Commands](docs/portal-commands.md)**: Repository connection management
 
@@ -109,6 +122,8 @@ Remote operations are designed for selective collaboration:
 ivaldi forge                    # Initialize repository
 ivaldi status                   # Show working directory status
 ivaldi whereami                 # Show current timeline details (alias: wai)
+ivaldi config                   # Configure user settings (interactive)
+ivaldi config --list            # List all configuration
 ```
 
 ### File Operations
@@ -117,6 +132,19 @@ ivaldi gather [files...]        # Stage files for commit
 ivaldi seal <message>           # Create commit with staged files (generates unique seal name)
 ivaldi seals list               # List all seals with their generated names
 ivaldi seals show <name|hash>   # Show detailed information about a seal
+ivaldi reset [files...]         # Unstage files
+ivaldi reset --hard             # Discard all uncommitted changes
+```
+
+### History and Comparison
+```bash
+ivaldi log                      # Show commit history
+ivaldi log --oneline            # Concise one-line format
+ivaldi log --limit 10           # Show only last 10 commits
+ivaldi diff                     # Show working directory changes
+ivaldi diff --staged            # Show staged changes
+ivaldi diff <seal>              # Compare with specific commit
+ivaldi diff --stat              # Show summary statistics
 ```
 
 ### Timeline Management
@@ -125,6 +153,9 @@ ivaldi timeline create <name>   # Create new timeline
 ivaldi timeline switch <name>   # Switch to timeline
 ivaldi timeline list           # List all timelines
 ivaldi timeline remove <name>   # Delete timeline
+ivaldi fuse <source> to <target> # Merge timelines
+ivaldi fuse --continue          # Continue merge after resolving conflicts
+ivaldi fuse --abort             # Abort current merge
 ```
 
 ### Remote Operations
@@ -159,15 +190,52 @@ ivaldi upload                  # Push to GitHub
 - Auto-shelving preserves uncommitted changes
 - Minimal file system operations during switches
 
+## Migrating from Git
+
+Here's how to translate a common Git workflow to Ivaldi:
+
+```bash
+# Git commands → Ivaldi commands
+
+git init                                                             → ivaldi forge
+git add README.md                                                    → ivaldi gather README.md
+git commit -m "first commit"                                         → ivaldi seal -m "first commit"
+git branch -M main                                                   → (not needed - main is default)
+git remote add origin https://github.com/javanhut/TestRepoIvaldi.git → ivaldi portal add origin https://github.com/javanhut/TestRepoIvaldi.git
+git push -u origin main                                              → ivaldi upload
+```
+
+```bash
+#Initialize empty repository
+
+ivaldi forge
+ivaldi gather README.md
+ivaldi seal "first commit"
+ivaldi portal add javanhut/TestRepoIvaldi
+ivaldi upload
+```
+
+#### Differences Ivaldi has: 
+Ivaldi sets main an default branch on initialization
+Gather can be use specifically or empty for all file added
+Sealing is like sealing a letter you have the message no need to specific it is.
+Portals don't need a https://github.com/owner/Repo.git the owner and repo are enough.
+You upload the code to github with upload keyword not a push.
+
 ## Comparison with Git
 
 | Feature | Git | Ivaldi |
 |---------|-----|--------|
 | Initialize | `git init` | `ivaldi forge` |
+| Configure | `git config` | `ivaldi config` |
 | Stage files | `git add` | `ivaldi gather` |
+| Unstage | `git reset` | `ivaldi reset` |
 | Commit | `git commit` | `ivaldi seal` |
+| Log | `git log` | `ivaldi log` |
+| Diff | `git diff` | `ivaldi diff` |
 | Branch | `git branch` | `ivaldi timeline create` |
 | Switch branch | `git checkout` | `ivaldi timeline switch` |
+| Merge | `git merge` | `ivaldi fuse` |
 | Clone | `git clone` | `ivaldi download` |
 | Push | `git push` | `ivaldi upload` |
 | Fetch | `git fetch` | `ivaldi harvest` |

@@ -117,7 +117,7 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 			return err
 		}
 
-		if strings.HasPrefix(relPath, ".ivaldi") {
+		if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
 			return nil
 		}
 
@@ -266,7 +266,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	// Only create target index from timeline commit if we don't have an autoshelf
 	if !hasAutoShelf {
 		var err error
-		targetIndex, err = m.createTargetIndex(*timeline)
+		targetIndex, err = m.CreateTargetIndex(*timeline)
 		if err != nil {
 			return fmt.Errorf("failed to create target index: %w", err)
 		}
@@ -280,7 +280,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	}
 
 	// Apply changes to working directory
-	err = m.applyChangesToWorkspace(diff)
+	err = m.ApplyChangesToWorkspace(diff)
 	if err != nil {
 		return fmt.Errorf("failed to apply changes to workspace: %w", err)
 	}
@@ -294,9 +294,9 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	return nil
 }
 
-// createTargetIndex creates a target workspace index for a timeline.
+// CreateTargetIndex creates a target workspace index for a timeline.
 // This reads the actual commit object and extracts the workspace files.
-func (m *Materializer) createTargetIndex(timeline refs.Timeline) (wsindex.IndexRef, error) {
+func (m *Materializer) CreateTargetIndex(timeline refs.Timeline) (wsindex.IndexRef, error) {
 	wsBuilder := wsindex.NewBuilder(m.CAS)
 
 	// If timeline has no content (empty hash), return empty index
@@ -369,7 +369,7 @@ func (m *Materializer) getTimelineBaseIndex(timelineName string, refsManager *re
 		return wsBuilder.Build(nil)
 	}
 
-	return m.createTargetIndex(*timeline)
+	return m.CreateTargetIndex(*timeline)
 }
 
 // getFileRefFromTree extracts the NodeRef for a specific file from the tree.
@@ -417,8 +417,8 @@ func (m *Materializer) getFileRefFromTree(tree *commit.TreeObject, filePath stri
 	return filechunk.NodeRef{}, fmt.Errorf("unexpected error in getFileRefFromTree")
 }
 
-// applyChangesToWorkspace applies file changes to the working directory.
-func (m *Materializer) applyChangesToWorkspace(diff *diffmerge.WorkspaceDiff) error {
+// ApplyChangesToWorkspace applies file changes to the working directory.
+func (m *Materializer) ApplyChangesToWorkspace(diff *diffmerge.WorkspaceDiff) error {
 	loader := filechunk.NewLoader(m.CAS)
 
 	for _, change := range diff.FileChanges {
@@ -570,7 +570,7 @@ func (m *Materializer) RestoreWorkspace(backupName string) error {
 	}
 
 	// Apply changes
-	return m.applyChangesToWorkspace(diff)
+	return m.ApplyChangesToWorkspace(diff)
 }
 
 // CleanWorkspace removes all files from the workspace.
@@ -596,15 +596,32 @@ func (m *Materializer) CleanWorkspace() error {
 	}
 
 	// Apply changes
-	return m.applyChangesToWorkspace(diff)
+	return m.ApplyChangesToWorkspace(diff)
 }
 
 // GetWorkspaceStatus returns detailed status of workspace files.
 func (m *Materializer) GetWorkspaceStatus() (*WorkspaceStatus, error) {
-	// Get current tracked state
-	currentState, err := m.GetCurrentState()
+	// Get current timeline name
+	refsManager, err := refs.NewRefsManager(m.IvaldiDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current state: %w", err)
+		return nil, fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	timelineName, err := refsManager.GetCurrentTimeline()
+	if err != nil {
+		// No current timeline, return empty status
+		return &WorkspaceStatus{
+			TimelineName: "",
+			Clean:        true,
+			Changes:      nil,
+		}, nil
+	}
+
+	// Get the committed state for this timeline
+	committedIndex, err := m.getTimelineBaseIndex(timelineName, refsManager)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get committed timeline state: %w", err)
 	}
 
 	// Scan actual workspace
@@ -613,15 +630,15 @@ func (m *Materializer) GetWorkspaceStatus() (*WorkspaceStatus, error) {
 		return nil, fmt.Errorf("failed to scan workspace: %w", err)
 	}
 
-	// Compute differences
+	// Compute differences between committed state and actual workspace
 	differ := diffmerge.NewDiffer(m.CAS)
-	diff, err := differ.DiffWorkspaces(currentState.Index, actualIndex)
+	diff, err := differ.DiffWorkspaces(committedIndex, actualIndex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute status diff: %w", err)
 	}
 
 	status := &WorkspaceStatus{
-		TimelineName: currentState.TimelineName,
+		TimelineName: timelineName,
 		Clean:        len(diff.FileChanges) == 0,
 		Changes:      diff.FileChanges,
 	}
@@ -762,7 +779,7 @@ func (sm *StashManager) ApplyStash(name string) error {
 	}
 
 	// Apply changes
-	return sm.Materializer.applyChangesToWorkspace(diff)
+	return sm.Materializer.ApplyChangesToWorkspace(diff)
 }
 
 // ListStashes returns a list of available stashes.

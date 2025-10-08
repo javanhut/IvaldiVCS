@@ -77,9 +77,17 @@ ivaldi gather file1.txt src/file2.js
 # Stage all files in directory
 ivaldi gather .
 
-# Stage all modified files
+# Stage all modified files (prompts for hidden files)
 ivaldi gather
+
+# Stage all files without prompting (shows warnings)
+ivaldi gather --allow-all
 ```
+
+**Security Features:**
+- `.env` and `.venv` files are auto-excluded for security
+- Hidden files (starting with `.`) require confirmation (except `.ivaldiignore`)
+- Use `--allow-all` to skip prompts in automation/scripts
 
 ### 3. Create Commit (Seal)
 
@@ -141,6 +149,31 @@ ivaldi timeline list
 # Delete a timeline
 ivaldi timeline remove old-feature
 ```
+
+### Time Travel
+
+```bash
+# Interactively browse and travel to previous seals (with arrow keys!)
+ivaldi travel
+
+# Opens interactive browser showing commit history
+# Navigate with Up/Down arrows, press Enter to select
+# Options:
+# 1. Diverge - Create new timeline from selected seal (non-destructive)
+# 2. Overwrite - Reset timeline to selected seal (destructive)
+```
+
+**Features:**
+- Arrow key navigation with visual cursor
+- Auto-pagination for large histories
+- Search functionality (`--search`)
+- Direct number jumping
+
+**Use Cases:**
+- Experiment with different approaches from the same starting point
+- Fix bugs in older code by branching from before the bug
+- Undo bad commits by overwriting timeline
+- Create multiple feature branches from a stable point
 
 ## Remote Repository Operations
 
@@ -218,7 +251,26 @@ This prevents work loss and eliminates manual stashing.
 
 ### Ignore Files
 
-Create `.ivaldiignore` file (similar to `.gitignore`):
+Ivaldi supports excluding files and directories from version control using the `.ivaldiignore` file, similar to `.gitignore`.
+
+#### Using the Exclude Command
+
+```bash
+# Exclude specific files or patterns
+ivaldi exclude build/ dist/ *.exe
+
+# Exclude temporary files
+ivaldi exclude *.tmp .DS_Store
+
+# Exclude directories
+ivaldi exclude node_modules/ .cache/
+```
+
+The `ivaldi exclude` command automatically creates or appends to `.ivaldiignore`.
+
+#### Manual .ivaldiignore Creation
+
+You can also manually create `.ivaldiignore`:
 ```
 # Ignore build artifacts
 build/
@@ -228,7 +280,36 @@ dist/
 # Ignore temporary files
 *.tmp
 .DS_Store
+
+# Ignore directories
+node_modules/
+.cache/
+
+# Wildcard patterns
+**/*.log
+test/**/*.tmp
 ```
+
+#### Security Features
+
+Ivaldi includes built-in protections against accidentally committing sensitive files:
+
+**Auto-Excluded Files:**
+- `.env`, `.env.*` - Environment files with secrets
+- `.venv`, `.venv/` - Python virtual environments
+
+**Interactive Prompts:**
+- Hidden files (starting with `.`) require confirmation before gathering
+- `.ivaldiignore` itself never prompts and can always be gathered
+- Use `--allow-all` flag to skip prompts (useful for automation)
+
+#### Important Notes
+
+- **The `.ivaldiignore` file itself is NEVER ignored** and can always be gathered and committed
+- Ignored files are excluded from `ivaldi gather` operations, even if explicitly specified
+- Patterns support glob matching including wildcards (`*`, `**`)
+- Directory patterns should end with `/` for clarity
+- Empty lines and lines starting with `#` are treated as comments
 
 ## Command Reference
 
@@ -244,10 +325,12 @@ dist/
 
 | Command | Description |
 |---------|-------------|
-| `ivaldi gather [files...]` | Stage files for commit |
+| `ivaldi gather [files...]` | Stage files for commit (respects .ivaldiignore, prompts for dot files) |
+| `ivaldi gather --allow-all` | Stage all files without prompts (shows warnings) |
 | `ivaldi seal <message>` | Create commit with auto-generated seal name |
 | `ivaldi seals list` | List all seals with their names |
 | `ivaldi seals show <name\|hash>` | Show detailed seal information |
+| `ivaldi exclude <patterns...>` | Add patterns to .ivaldiignore file |
 
 ### Timeline Operations
 
@@ -257,6 +340,7 @@ dist/
 | `ivaldi timeline switch <name>` | Switch to timeline |
 | `ivaldi timeline list` | List all timelines |
 | `ivaldi timeline remove <name>` | Delete timeline |
+| `ivaldi travel` | Interactively browse and travel to previous seals |
 
 ### Remote Operations
 
@@ -321,6 +405,30 @@ ivaldi timeline switch feature-payments
 ivaldi gather src/payments.js
 ivaldi seal "Fix payment validation"
 ivaldi upload
+```
+
+### Time Travel Workflow
+
+```bash
+# Browse commit history interactively with arrow keys
+ivaldi travel
+
+# Use Up/Down arrows to navigate to the seal you want
+# Press Enter to select
+
+# Diverge to create new experimental timeline
+Choice: 1
+Enter new timeline name: experiment-new-algo
+
+# Now on new timeline branched from selected seal
+ivaldi gather src/experimental.js
+ivaldi seal "Try new algorithm"
+
+# Upload as separate branch
+ivaldi upload
+
+# Switch back to original if experiment fails
+ivaldi timeline switch main
 ```
 
 ### Repository Sync

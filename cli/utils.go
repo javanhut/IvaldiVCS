@@ -8,6 +8,7 @@ import (
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
+	"github.com/javanhut/Ivaldi-vcs/internal/config"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/objects"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
@@ -141,4 +142,10 @@ func createInitialCommit(ivaldiDir, workDir string) (*[32]byte, error) {
 	}
 
 	return &hashArray, nil
+}
+
+// getAuthorFromConfig retrieves the author string from configuration
+// Returns "Name <email>" format or error if not configured
+func getAuthorFromConfig() (string, error) {
+	return config.GetAuthor()
 }
