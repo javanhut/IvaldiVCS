@@ -150,6 +150,31 @@ ivaldi timeline list
 ivaldi timeline remove old-feature
 ```
 
+### Time Travel
+
+```bash
+# Interactively browse and travel to previous seals (with arrow keys!)
+ivaldi travel
+
+# Opens interactive browser showing commit history
+# Navigate with Up/Down arrows, press Enter to select
+# Options:
+# 1. Diverge - Create new timeline from selected seal (non-destructive)
+# 2. Overwrite - Reset timeline to selected seal (destructive)
+```
+
+**Features:**
+- Arrow key navigation with visual cursor
+- Auto-pagination for large histories
+- Search functionality (`--search`)
+- Direct number jumping
+
+**Use Cases:**
+- Experiment with different approaches from the same starting point
+- Fix bugs in older code by branching from before the bug
+- Undo bad commits by overwriting timeline
+- Create multiple feature branches from a stable point
+
 ## Remote Repository Operations
 
 ### Connect to GitHub
@@ -315,6 +340,7 @@ Ivaldi includes built-in protections against accidentally committing sensitive f
 | `ivaldi timeline switch <name>` | Switch to timeline |
 | `ivaldi timeline list` | List all timelines |
 | `ivaldi timeline remove <name>` | Delete timeline |
+| `ivaldi travel` | Interactively browse and travel to previous seals |
 
 ### Remote Operations
 
@@ -379,6 +405,30 @@ ivaldi timeline switch feature-payments
 ivaldi gather src/payments.js
 ivaldi seal "Fix payment validation"
 ivaldi upload
+```
+
+### Time Travel Workflow
+
+```bash
+# Browse commit history interactively with arrow keys
+ivaldi travel
+
+# Use Up/Down arrows to navigate to the seal you want
+# Press Enter to select
+
+# Diverge to create new experimental timeline
+Choice: 1
+Enter new timeline name: experiment-new-algo
+
+# Now on new timeline branched from selected seal
+ivaldi gather src/experimental.js
+ivaldi seal "Try new algorithm"
+
+# Upload as separate branch
+ivaldi upload
+
+# Switch back to original if experiment fails
+ivaldi timeline switch main
 ```
 
 ### Repository Sync

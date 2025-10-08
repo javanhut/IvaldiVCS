@@ -68,6 +68,9 @@ func init() {
 
 	// Merge command
 	rootCmd.AddCommand(fuseCmd)
+
+	// Time travel command
+	rootCmd.AddCommand(travelCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {

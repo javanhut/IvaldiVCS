@@ -296,9 +296,9 @@ Proceed with merge? (yes/no): yes
 **Key Difference from Git:** Ivaldi NEVER writes conflict markers to your workspace files. All conflict resolution happens through strategies or an interactive UI, keeping your workspace clean.
 
 Conflicts are detected at the **chunk level** (64KB granularity) using content hashes:
-- Same chunk hash → No conflict (identical content)
-- Different hashes → Check if only one side changed
-- Both changed differently → Real conflict
+- Same chunk hash: No conflict (identical content)
+- Different hashes: Check if only one side changed
+- Both changed differently: Real conflict
 
 ### Automatic Resolution with Strategies
 
@@ -336,7 +336,7 @@ The auto strategy uses chunk-level intelligence to automatically resolve:
 $ ivaldi fuse --strategy=theirs feature-auth to main
 
 >> Using merge strategy: theirs
-  ✓ No manual resolution needed
+  No manual resolution needed
 
 [OK] Changes from feature-auth fused into main!
 ```
@@ -349,7 +349,7 @@ Automatically accepts ALL changes from source timeline.
 $ ivaldi fuse --strategy=ours feature-auth to main
 
 >> Using merge strategy: ours
-  ✓ No manual resolution needed
+  No manual resolution needed
 
 [OK] Changes from feature-auth fused into main!
 ```
@@ -362,7 +362,7 @@ Automatically keeps ALL changes from target timeline.
 $ ivaldi fuse --strategy=union feature-changelog to main
 
 >> Using merge strategy: union
-  ✓ Combining changes from both timelines
+  Combining changes from both timelines
 
 [OK] Changes from feature-changelog fused into main!
 ```
@@ -428,7 +428,7 @@ ivaldi fuse --abort
 
 | Aspect | Git | Ivaldi |
 |--------|-----|--------|
-| Conflict markers | ✗ Written to files | ✓ Never written to files |
+| Conflict markers | Written to files | Never written to files |
 | Resolution method | Manual file editing | Strategy selection or interactive UI |
 | Granularity | Line-based | Chunk-based (64KB) |
 | False conflicts | Common (whitespace) | Rare (content-hash based) |

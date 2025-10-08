@@ -310,11 +310,11 @@ ivaldi gather
 # Output:
 # Warning: '.eslintrc.json' is a hidden file.
 # Do you want to gather this file? (y/N): y
-# ✓ Gathering: .eslintrc.json
+# Gathering: .eslintrc.json
 #
 # Warning: '.vscode/settings.json' is a hidden file.
 # Do you want to gather this file? (y/N): n
-# ✗ Skipped: .vscode/settings.json
+# Skipped: .vscode/settings.json
 #
 # Auto-excluded for security: .env
 ```
