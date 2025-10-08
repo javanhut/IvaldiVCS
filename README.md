@@ -2,6 +2,23 @@
 
 A modern version control system designed as a Git alternative with enhanced features like timeline-based branching, content-addressable storage, and seamless GitHub integration.
 
+## Video Demo
+
+https://github.com/user-attachments/assets/0dbf69e2-e830-40c0-ad92-bbff6a484ee3
+
+
+https://github.com/user-attachments/assets/3cd3a4d1-554f-44c9-b541-9e2f2739da4d
+
+
+
+https://github.com/user-attachments/assets/0de328af-d5d5-4d08-bc8b-2f800b671adf
+
+
+
+https://github.com/user-attachments/assets/128a8407-c5e5-4115-a3cb-24c2f48a71dd
+
+
+
 ## Features
 
 - **Timeline-Based Branching**: Intuitive branch management with auto-shelving
