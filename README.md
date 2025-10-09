@@ -33,13 +33,86 @@ https://github.com/user-attachments/assets/128a8407-c5e5-4115-a3cb-24c2f48a71dd
 
 ### Installation
 
+#### Automated Installation (Recommended)
+
+The easiest way to install Ivaldi VCS is using the automated setup script:
+
 ```bash
-# Clone and build
+# Install directly using curl
+curl -fsSL https://raw.githubusercontent.com/javanhut/IvaldiVCS/main/setup.sh | bash
+```
+
+Or download and run:
+
+```bash
+# Download the setup script
+curl -fsSL https://raw.githubusercontent.com/javanhut/IvaldiVCS/main/setup.sh -o setup.sh
+chmod +x setup.sh
+
+# Run the installer
+./setup.sh
+```
+
+The setup script will:
+- Detect your operating system (Linux/macOS)
+- Install Go if needed (version 1.19+)
+- Download and build Ivaldi VCS
+- Install the binary to `/usr/local/bin`
+- Clean up temporary files
+
+After installation, restart your terminal or run:
+```bash
+source ~/.bashrc  # Linux
+source ~/.zshrc   # macOS with zsh
+```
+
+#### Manual Installation
+
+If you prefer to build from source:
+
+```bash
+# Clone the repository
 git clone https://github.com/javanhut/IvaldiVCS
 cd IvaldiVCS
-go build -o ivaldi .
 
-# Add to PATH or use ./ivaldi directly
+# Build and install (requires Go 1.19+)
+make install
+
+# Or build locally
+make build
+./build/ivaldi --help
+```
+
+#### Verify Installation
+
+```bash
+ivaldi --version
+ivaldi --help
+```
+
+### Uninstallation
+
+To remove Ivaldi VCS from your system:
+
+```bash
+# Download and run the uninstall script
+curl -fsSL https://raw.githubusercontent.com/javanhut/IvaldiVCS/main/uninstall.sh | bash
+```
+
+Or if you have the source:
+
+```bash
+./uninstall.sh
+```
+
+The uninstall script will:
+- Remove the Ivaldi binary from `/usr/local/bin`
+- Optionally clean up PATH entries from shell configuration files
+- Optionally remove source directory (if present)
+
+You can also uninstall manually:
+```bash
+sudo rm /usr/local/bin/ivaldi
 ```
 
 ### Basic Usage
