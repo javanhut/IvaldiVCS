@@ -1,0 +1,93 @@
+# golangci-lint configuration for Ivaldi VCS
+# See https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Simplify code
+    - govet         # Vet examines Go source code
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # State-of-the-art linter
+    - unused        # Check for unused constants, variables, functions
+    - gofmt         # Check whether code was gofmt-ed
+    - goimports     # Check import statements are formatted
+    - misspell      # Finds commonly misspelled English words
+    - revive        # Fast, configurable, extensible, flexible drop-in replacement for golint
+    - unconvert     # Remove unnecessary type conversions
+    - unparam       # Reports unused function parameters
+    - gosec         # Security checks
+    - bodyclose     # Checks whether HTTP response body is closed successfully
+    - noctx         # Finds sending http request without context.Context
+    - gocritic      # The most opinionated Go linter
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+
+  govet:
+    enable-all: true
+    disable:
+      - shadow
+
+  revive:
+    severity: warning
+    rules:
+      - name: exported
+        severity: warning
+        disabled: false
+      - name: error-return
+      - name: error-naming
+      - name: if-return
+      - name: var-naming
+      - name: range
+
+  gofmt:
+    simplify: true
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+    disabled-checks:
+      - commentedOutCode
+      - unnamedResult
+
+  gosec:
+    excludes:
+      - G204  # Subprocess launched with variable
+      - G304  # File path provided as taint input
+
+issues:
+  exclude-rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+        - unparam
+
+    # Ignore long lines in comments
+    - linters:
+        - lll
+      source: "^//"
+
+  # Maximum issues count per one linter
+  max-issues-per-linter: 50
+
+  # Maximum count of issues with the same text
+  max-same-issues: 3
+
+  # Show only new issues
+  new: false
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
