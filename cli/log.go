@@ -40,10 +40,10 @@ func init() {
 }
 
 type commitInfo struct {
-	Hash       cas.Hash
-	Commit     *commit.CommitObject
-	SealName   string
-	Timeline   string
+	Hash     cas.Hash
+	Commit   *commit.CommitObject
+	SealName string
+	Timeline string
 }
 
 func runLog(cmd *cobra.Command, args []string) error {
