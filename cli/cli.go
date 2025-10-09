@@ -10,10 +10,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const IvaldiVersion = "0.1.0"
+
 var rootCmd = &cobra.Command{
 	Use:   "ivaldi",
 	Short: "Ivaldi is a Version Control System",
 	Long:  `Ivaldi is a VCS used to control repo that can be used to replace Git in your normal workflow`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if version {
+			fmt.Printf("Ivaldi Version %s\n", IvaldiVersion)
+			os.Exit(0)
+		}
+		// If no version flag, show help
+		cmd.Help()
+	},
 }
 
 var initialCmd = &cobra.Command{
@@ -30,8 +40,11 @@ func Execute() {
 	}
 }
 
+var version bool
+
 func init() {
 	// Core commands
+	rootCmd.Flags().BoolVar(&version, "version", false, "Use this to get the Version of Ivaldi")
 	rootCmd.AddCommand(initialCmd)
 
 	// Timeline management commands
