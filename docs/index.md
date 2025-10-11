@@ -53,7 +53,7 @@ ivaldi upload
 - **Files**: [gather](commands/gather.md) • [seal](commands/seal.md) • [reset](commands/reset.md) • [exclude](commands/exclude.md)
 - **History**: [log](commands/log.md) • [diff](commands/diff.md) • [travel](commands/travel.md)
 - **Timelines**: [timeline](commands/timeline.md) • [fuse](commands/fuse.md)
-- **Remote**: [portal](commands/portal.md) • [download](commands/download.md) • [upload](commands/upload.md) • [scout](commands/scout.md) • [harvest](commands/harvest.md)
+- **Remote**: [portal](commands/portal.md) • [download](commands/download.md) • [upload](commands/upload.md) • [sync](sync-command.md) • [scout](commands/scout.md) • [harvest](commands/harvest.md)
 
 ### Guides
 - [Basic Workflow](guides/basic-workflow.md)
@@ -108,6 +108,7 @@ ivaldi fuse feature-auth to main
 | `git merge` | `ivaldi fuse` |
 | `git clone` | `ivaldi download` |
 | `git push` | `ivaldi upload` |
+| `git pull` | `ivaldi sync` |
 | `git fetch` | `ivaldi harvest` |
 | `git status` | `ivaldi status` |
 | `git log` | `ivaldi log` |
