@@ -8,7 +8,7 @@ import (
 
 // Manager provides shared database access to prevent locking conflicts.
 type Manager struct {
-	mu     sync.RWMutex
+	mu     sync.RWMutex //nolint:unused // Reserved for future synchronization needs
 	db     *DB
 	dbPath string
 	refs   int // Reference count
