@@ -235,6 +235,27 @@ func ConvertGitObjectsToIvaldiConcurrent(gitDir, ivaldiDir string, workers int) 
 	// Create worker pool
 	pool := NewConversionWorkerPool(workers, db, objectsDir)
 
+	// Start result collector goroutine to prevent deadlock
+	// This drains the results channel while jobs are being submitted
+	resultsChan := make(chan *ConversionResult, 1)
+	jobsSubmitted := len(objectPaths)
+
+	go func() {
+		result := &ConversionResult{}
+		for i := 0; i < jobsSubmitted; i++ {
+			r := <-pool.results
+			if r.Success {
+				result.Converted++
+			} else {
+				result.Skipped++
+				if r.Error != nil {
+					result.Errors = append(result.Errors, r.Error)
+				}
+			}
+		}
+		resultsChan <- result
+	}()
+
 	// Submit all jobs
 	fmt.Printf("Converting Git objects using %d workers...\n", workers)
 	for i, objectPath := range objectPaths {
@@ -245,8 +266,14 @@ func ConvertGitObjectsToIvaldiConcurrent(gitDir, ivaldiDir string, workers int) 
 		})
 	}
 
-	// Close pool and get results
-	return pool.Close()
+	// Close jobs channel and wait for workers to finish
+	close(pool.jobs)
+	pool.wg.Wait()
+
+	// Get collected results from result collector goroutine
+	result := <-resultsChan
+
+	return result, nil
 }
 
 // SnapshotCurrentFilesConcurrent creates blob objects for all files using concurrent workers
@@ -308,6 +335,27 @@ func SnapshotCurrentFilesConcurrent(workDir, ivaldiDir string, workers int) (*Co
 	// Create worker pool
 	pool := NewConversionWorkerPool(workers, db, objectsDir)
 
+	// Start result collector goroutine to prevent deadlock
+	// This drains the results channel while jobs are being submitted
+	resultsChan := make(chan *ConversionResult, 1)
+	jobsSubmitted := len(files)
+
+	go func() {
+		result := &ConversionResult{}
+		for i := 0; i < jobsSubmitted; i++ {
+			r := <-pool.results
+			if r.Success {
+				result.Converted++
+			} else {
+				result.Skipped++
+				if r.Error != nil {
+					result.Errors = append(result.Errors, r.Error)
+				}
+			}
+		}
+		resultsChan <- result
+	}()
+
 	// Submit all jobs
 	fmt.Printf("Snapshotting files using %d workers...\n", workers)
 	for _, file := range files {
@@ -319,6 +367,12 @@ func SnapshotCurrentFilesConcurrent(workDir, ivaldiDir string, workers int) (*Co
 		})
 	}
 
-	// Close pool and get results
-	return pool.Close()
+	// Close jobs channel and wait for workers to finish
+	close(pool.jobs)
+	pool.wg.Wait()
+
+	// Get collected results from result collector goroutine
+	result := <-resultsChan
+
+	return result, nil
 }
