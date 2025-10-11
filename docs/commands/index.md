@@ -22,6 +22,7 @@ Complete reference for all Ivaldi commands.
 | [timeline](timeline.md) | Manage timelines | `git branch` / `git checkout` |
 | [travel](travel.md) | Interactive time travel | (interactive `git log` + checkout) |
 | [fuse](fuse.md) | Merge timelines | `git merge` |
+| [auth](auth.md) | Authenticate with GitHub | (similar to `gh auth`) |
 | [portal](portal.md) | Manage GitHub connections | `git remote` |
 | [download](download.md) | Clone repository | `git clone` |
 | [upload](upload.md) | Push to GitHub | `git push` |
@@ -54,6 +55,7 @@ Complete reference for all Ivaldi commands.
 - [fuse](fuse.md) - Merge timelines together
 
 ### Remote Operations
+- [auth](auth.md) - Authenticate with GitHub using OAuth
 - [portal](portal.md) - Manage GitHub repository connections
 - [download](download.md) - Clone a repository from GitHub
 - [upload](upload.md) - Push commits to GitHub

@@ -5,8 +5,6 @@ import (
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/javanhut/Ivaldi-vcs/internal/fsmerkle"
 )
 
 func TestLeafCanonicalEncoding(t *testing.T) {
@@ -615,7 +613,3 @@ func TestAutoshelving(t *testing.T) {
 	}
 }
 
-// Helper function to create a test tree root
-func createTestTreeRoot(content byte) fsmerkle.Hash {
-	return [32]byte{content}
-}

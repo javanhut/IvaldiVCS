@@ -146,6 +146,12 @@ ivaldi timeline switch main
 ### GitHub Integration
 
 ```bash
+# Authenticate with GitHub (OAuth)
+ivaldi auth login
+
+# Check authentication status
+ivaldi auth status
+
 # Connect to GitHub repository
 ivaldi portal add owner/repo
 
@@ -252,6 +258,9 @@ ivaldi fuse --abort             # Abort current merge
 
 ### Remote Operations
 ```bash
+ivaldi auth login              # Authenticate with GitHub (OAuth)
+ivaldi auth status             # Check authentication status
+ivaldi auth logout             # Log out
 ivaldi portal add <owner/repo>  # Add GitHub connection
 ivaldi portal list             # List connections
 ivaldi download <url> [dir]    # Clone repository

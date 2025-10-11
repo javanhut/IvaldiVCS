@@ -369,25 +369,23 @@ func (m *Merger) MergeWorkspacesWithStrategy(base, left, right wsindex.IndexRef,
 			// If no merged chunks, file was deleted (intentionally left out)
 		} else {
 			// Conflicts remain - convert to legacy Conflict format
-			for range result.Conflicts {
-				conflict := Conflict{
-					Type: FileFileConflict,
-					Path: path,
-				}
-
-				if baseFile != nil {
-					conflict.BaseFile = baseFile
-				}
-				if leftFile != nil {
-					conflict.LeftFile = leftFile
-				}
-				if rightFile != nil {
-					conflict.RightFile = rightFile
-				}
-
-				conflicts = append(conflicts, conflict)
-				break // Only add one conflict per file
+			// Only create one conflict per file
+			conflict := Conflict{
+				Type: FileFileConflict,
+				Path: path,
 			}
+
+			if baseFile != nil {
+				conflict.BaseFile = baseFile
+			}
+			if leftFile != nil {
+				conflict.LeftFile = leftFile
+			}
+			if rightFile != nil {
+				conflict.RightFile = rightFile
+			}
+
+			conflicts = append(conflicts, conflict)
 		}
 	}
 

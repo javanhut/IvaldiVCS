@@ -67,12 +67,6 @@ func buildTreeFromMapRecursive(store *Store, files map[string][]byte, prefix str
 			if subdirs[name] == nil {
 				subdirs[name] = make(map[string][]byte)
 			}
-			subPath := prefix
-			if subPath == "" {
-				subPath = name
-			} else {
-				subPath = subPath + "/" + name
-			}
 			subdirs[name][filepath] = content
 		}
 	}
@@ -269,10 +263,3 @@ func diffTreesRecursive(aHash, bHash Hash, pathPrefix string, ldr Loader, change
 	return nil
 }
 
-// Helper function to create a full path from components
-func joinPath(prefix, name string) string {
-	if prefix == "" {
-		return name
-	}
-	return prefix + "/" + name
-}

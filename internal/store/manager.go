@@ -8,7 +8,6 @@ import (
 
 // Manager provides shared database access to prevent locking conflicts.
 type Manager struct {
-	mu     sync.RWMutex
 	db     *DB
 	dbPath string
 	refs   int // Reference count
@@ -24,31 +23,31 @@ var managerMu sync.Mutex
 func GetSharedDB(ivaldiDir string) (*SharedDB, error) {
 	managerMu.Lock()
 	defer managerMu.Unlock()
-	
+
 	dbPath := filepath.Join(ivaldiDir, "objects.db")
-	
+
 	// If no manager exists or it's for a different database, create a new one
 	if globalManager == nil || globalManager.dbPath != dbPath {
 		// Close existing manager if it exists
 		if globalManager != nil {
 			globalManager.close()
 		}
-		
+
 		db, err := Open(dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("open database: %w", err)
 		}
-		
+
 		globalManager = &Manager{
 			db:     db,
 			dbPath: dbPath,
 			refs:   0,
 		}
 	}
-	
+
 	// Increment reference count
 	globalManager.refs++
-	
+
 	return &SharedDB{
 		manager: globalManager,
 		DB:      globalManager.db,
@@ -67,19 +66,19 @@ func (sdb *SharedDB) Close() error {
 	if sdb.manager == nil {
 		return nil
 	}
-	
+
 	managerMu.Lock()
 	defer managerMu.Unlock()
-	
+
 	sdb.manager.refs--
-	
+
 	// If no more references, close the underlying database
 	if sdb.manager.refs <= 0 {
 		err := sdb.manager.close()
 		globalManager = nil
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -90,3 +89,4 @@ func (m *Manager) close() error {
 	}
 	return nil
 }
+

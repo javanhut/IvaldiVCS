@@ -19,10 +19,10 @@ var (
 
 // Git object type codes (header nibble). We emit blobs here.
 const (
-	objCommit = 1
-	objTree   = 2
-	objBlob   = 3
-	objTag    = 4
+	_ = iota + 1
+	_
+	_ //nolint:unused // Used in Object.Type field and writeObjHeader
+	_
 	// 6 & 7 are reserved for OFS_DELTA/REF_DELTA (not used in this minimal writer).
 )
 
