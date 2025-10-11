@@ -594,7 +594,7 @@ var sealCmd = &cobra.Command{
 		// Check if there are staged files
 		stageFile := filepath.Join(ivaldiDir, "stage", "files")
 		if _, err := os.Stat(stageFile); os.IsNotExist(err) {
-			return fmt.Errorf("no files staged for commit. Use 'ivaldi gather' to stage files first.")
+			return fmt.Errorf("no files staged for commit. Use 'ivaldi gather' to stage files first")
 		}
 
 		// Read staged files

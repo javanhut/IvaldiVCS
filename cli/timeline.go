@@ -45,7 +45,7 @@ var createTimelineCmd = &cobra.Command{
 		defer refsManager.Close()
 
 		// Get current timeline to branch from
-		currentTimeline, err := refsManager.GetCurrentTimeline()
+		currentTimeline, _ := refsManager.GetCurrentTimeline()
 		var baseHashes [2][32]byte // blake3 and sha256 hashes
 		var casStore cas.CAS
 
@@ -307,7 +307,7 @@ var removeTimelineCmd = &cobra.Command{
 		// Check if trying to remove current timeline
 		currentTimeline, err := refsManager.GetCurrentTimeline()
 		if err == nil && currentTimeline == name {
-			return fmt.Errorf("cannot remove current timeline '%s'. Switch to another timeline first.", name)
+			return fmt.Errorf("cannot remove current timeline '%s'. Switch to another timeline first", name)
 		}
 
 		// Remove timeline file

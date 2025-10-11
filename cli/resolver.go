@@ -148,7 +148,7 @@ func (cr *ConflictResolver) showConflictAndGetChoice(conflict diffmerge.ChunkCon
 
 // showChunkPreview shows a preview of chunk content.
 func (cr *ConflictResolver) showChunkPreview(data []byte) {
-	if data == nil || len(data) == 0 {
+	if len(data) == 0 {
 		fmt.Println(colors.Dim("  (empty)"))
 		return
 	}
