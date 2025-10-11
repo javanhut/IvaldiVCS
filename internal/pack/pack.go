@@ -21,7 +21,7 @@ var (
 const (
 	_ = iota + 1
 	_
-	objBlob //nolint:unused // Used in Object.Type field and writeObjHeader
+	_ //nolint:unused // Used in Object.Type field and writeObjHeader
 	_
 	// 6 & 7 are reserved for OFS_DELTA/REF_DELTA (not used in this minimal writer).
 )
