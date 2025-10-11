@@ -20,7 +20,33 @@ Ivaldi provides first-class GitHub support:
 
 ### GitHub Authentication
 
-#### Option 1: Personal Access Token
+#### Option 1: Ivaldi OAuth (Recommended)
+
+The easiest way to authenticate is using Ivaldi's built-in OAuth:
+
+```bash
+ivaldi auth login
+```
+
+This will:
+1. Generate a unique code
+2. Open GitHub's device authentication page
+3. Securely store your credentials
+4. No manual token creation needed!
+
+**Verify authentication:**
+```bash
+ivaldi auth status
+```
+
+**Logout when needed:**
+```bash
+ivaldi auth logout
+```
+
+See the [Auth Command documentation](../commands/auth.md) for more details.
+
+#### Option 2: Personal Access Token
 
 1. Create token on GitHub (Settings → Developer settings → Personal access tokens)
 2. Required scopes: `repo`, `workflow`
@@ -35,7 +61,7 @@ Add to `.bashrc` or `.zshrc` for persistence:
 echo 'export GITHUB_TOKEN="ghp_your_token"' >> ~/.bashrc
 ```
 
-#### Option 2: GitHub CLI
+#### Option 3: GitHub CLI
 
 ```bash
 gh auth login
@@ -46,7 +72,10 @@ This automatically configures authentication for Ivaldi.
 ### Verify Authentication
 
 ```bash
-# Try listing a repo
+# Check authentication status
+ivaldi auth status
+
+# Or try listing a repo
 ivaldi scout
 # Should work without errors
 ```
@@ -517,10 +546,16 @@ Error: GitHub authentication failed
 
 Solutions:
 ```bash
-# Refresh token
+# Check authentication status
+ivaldi auth status
+
+# Re-authenticate with Ivaldi
+ivaldi auth login
+
+# Or refresh token
 export GITHUB_TOKEN="new_token"
 
-# Or re-authenticate with CLI
+# Or re-authenticate with gh CLI
 gh auth login
 gh auth status
 ```

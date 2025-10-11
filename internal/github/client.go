@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/javanhut/Ivaldi-vcs/internal/auth"
 )
 
 const (
@@ -167,7 +169,7 @@ func NewClient() (*Client, error) {
 	username := getUsername()
 
 	if token == "" {
-		return nil, fmt.Errorf("no GitHub authentication found. Please set GITHUB_TOKEN environment variable or configure git credentials")
+		return nil, fmt.Errorf("no GitHub authentication found. Run 'ivaldi auth login' to authenticate or set GITHUB_TOKEN environment variable")
 	}
 
 	return &Client{
@@ -183,27 +185,32 @@ func NewClient() (*Client, error) {
 
 // getAuthToken attempts to get GitHub auth token from various sources
 func getAuthToken() string {
-	// 1. Check environment variable (highest priority)
+	// 1. Check Ivaldi OAuth token (highest priority)
+	if token, err := auth.GetToken(); err == nil && token != "" {
+		return token
+	}
+
+	// 2. Check environment variable
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		return token
 	}
 
-	// 2. Check git config for github token
+	// 3. Check git config for github token
 	if token := getGitConfig("github.token"); token != "" {
 		return token
 	}
 
-	// 3. Try to read from git credential helper
+	// 4. Try to read from git credential helper
 	if token := getGitCredential("github.com"); token != "" {
 		return token
 	}
 
-	// 4. Check .netrc file
+	// 5. Check .netrc file
 	if token := getNetrcToken("github.com"); token != "" {
 		return token
 	}
 
-	// 5. Check gh CLI config
+	// 6. Check gh CLI config
 	if token := getGHCLIToken(); token != "" {
 		return token
 	}
