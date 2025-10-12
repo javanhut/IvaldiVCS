@@ -3,7 +3,9 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -940,6 +942,171 @@ func (rs *RepoSyncer) GetRemoteTimelines(ctx context.Context, owner, repo string
 	return branches, nil
 }
 
+// TimelineDelta represents changes between local and remote timelines
+type TimelineDelta struct {
+	AddedFiles    []string
+	ModifiedFiles []string
+	DeletedFiles  []string
+	NoChanges     bool
+}
+
+// SyncTimeline performs an incremental sync of a timeline with remote changes
+func (rs *RepoSyncer) SyncTimeline(ctx context.Context, owner, repo, branch string, localCommitHash [32]byte) (*TimelineDelta, error) {
+	fmt.Printf("Fetching remote state for branch '%s'...\n", branch)
+
+	// Get remote branch information
+	branchInfo, err := rs.client.GetBranch(ctx, owner, repo, branch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get remote branch info: %w", err)
+	}
+
+	// Check if we already have this remote commit SHA stored
+	// If the GitHub SHA matches what we have locally, there are no changes
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err == nil {
+		defer refsManager.Close()
+		timeline, err := refsManager.GetTimeline(branch, refs.LocalTimeline)
+		if err == nil && timeline.GitSHA1Hash == branchInfo.Commit.SHA {
+			// Remote hasn't changed since last sync
+			return &TimelineDelta{NoChanges: true}, nil
+		}
+	}
+
+	// Get the remote tree
+	remoteTree, err := rs.client.GetTree(ctx, owner, repo, branchInfo.Commit.SHA, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get remote tree: %w", err)
+	}
+
+	// Build map of remote files
+	remoteFiles := make(map[string]string) // path -> SHA
+	for _, entry := range remoteTree.Tree {
+		if entry.Type == "blob" {
+			remoteFiles[entry.Path] = entry.SHA
+		}
+	}
+
+	// Get local files from commit
+	var localFiles map[string][]byte
+	if localCommitHash != [32]byte{} {
+		// Read local commit to get file list
+		commitReader := commit.NewCommitReader(rs.casStore)
+		commitObj, err := commitReader.ReadCommit(cas.Hash(localCommitHash))
+		if err != nil {
+			// If we can't read local commit, treat as empty
+			localFiles = make(map[string][]byte)
+		} else {
+			tree, err := commitReader.ReadTree(commitObj)
+			if err != nil {
+				localFiles = make(map[string][]byte)
+			} else {
+				filePaths, err := commitReader.ListFiles(tree)
+				if err != nil {
+					localFiles = make(map[string][]byte)
+				} else {
+					localFiles = make(map[string][]byte)
+					for _, filePath := range filePaths {
+						content, err := commitReader.GetFileContent(tree, filePath)
+						if err == nil {
+							localFiles[filePath] = content
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// No local commit, all remote files are new
+		localFiles = make(map[string][]byte)
+	}
+
+	// Compute delta
+	delta := &TimelineDelta{
+		AddedFiles:    []string{},
+		ModifiedFiles: []string{},
+		DeletedFiles:  []string{},
+	}
+
+	// Check for added and modified files
+	for remotePath, remoteSHA := range remoteFiles {
+		localContent, existsLocally := localFiles[remotePath]
+		if !existsLocally {
+			// File is new on remote
+			delta.AddedFiles = append(delta.AddedFiles, remotePath)
+		} else {
+			// File exists both locally and remotely - check if content changed
+			// Compute Git blob SHA for local content to compare with GitHub SHA
+			localGitSHA := computeGitBlobSHA(localContent)
+
+			if localGitSHA != remoteSHA {
+				// Content has changed
+				delta.ModifiedFiles = append(delta.ModifiedFiles, remotePath)
+			}
+			// If SHAs match, file is unchanged - don't add to any list
+		}
+	}
+
+	// Check for deleted files (exist locally but not on remote)
+	for localPath := range localFiles {
+		if _, existsRemotely := remoteFiles[localPath]; !existsRemotely {
+			delta.DeletedFiles = append(delta.DeletedFiles, localPath)
+		}
+	}
+
+	// If no changes, return early
+	if len(delta.AddedFiles) == 0 && len(delta.ModifiedFiles) == 0 && len(delta.DeletedFiles) == 0 {
+		delta.NoChanges = true
+		return delta, nil
+	}
+
+	// Download changed files
+	fmt.Printf("Downloading %d changed file(s)...\n",
+		len(delta.AddedFiles)+len(delta.ModifiedFiles))
+
+	var filesToDownload []TreeEntry
+	for _, path := range delta.AddedFiles {
+		if sha, ok := remoteFiles[path]; ok {
+			filesToDownload = append(filesToDownload, TreeEntry{
+				Path: path,
+				SHA:  sha,
+				Type: "blob",
+			})
+		}
+	}
+	for _, path := range delta.ModifiedFiles {
+		if sha, ok := remoteFiles[path]; ok {
+			filesToDownload = append(filesToDownload, TreeEntry{
+				Path: path,
+				SHA:  sha,
+				Type: "blob",
+			})
+		}
+	}
+
+	// Use existing download infrastructure
+	for _, entry := range filesToDownload {
+		if err := rs.downloadFile(ctx, owner, repo, entry, branchInfo.Commit.SHA); err != nil {
+			return nil, fmt.Errorf("failed to download %s: %w", entry.Path, err)
+		}
+	}
+
+	// Handle deletions
+	for _, path := range delta.DeletedFiles {
+		localPath := filepath.Join(rs.workDir, path)
+		if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+			fmt.Printf("Warning: failed to delete %s: %v\n", path, err)
+		}
+	}
+
+	// Create new commit for synced state
+	err = rs.createIvaldiCommit(fmt.Sprintf("Sync with remote %s/%s@%s",
+		owner, repo, branchInfo.Commit.SHA[:7]))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create commit after sync: %w", err)
+	}
+
+	return delta, nil
+}
+
 // FetchTimeline downloads a specific timeline (branch) from GitHub
 func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineName string) error {
 	fmt.Printf("Fetching timeline '%s' from %s/%s...\n", timelineName, owner, repo)
@@ -1081,4 +1248,13 @@ func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineNa
 
 	fmt.Printf("Successfully harvested timeline '%s' (workspace preserved)\n", timelineName)
 	return nil
+}
+
+// computeGitBlobSHA computes the Git blob SHA-1 hash for content
+// Git blob format: "blob <size>\0<content>"
+func computeGitBlobSHA(content []byte) string {
+	header := fmt.Sprintf("blob %d\x00", len(content))
+	fullContent := append([]byte(header), content...)
+	hash := sha1.Sum(fullContent)
+	return hex.EncodeToString(hash[:])
 }

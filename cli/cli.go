@@ -84,6 +84,9 @@ func init() {
 
 	// Time travel command
 	rootCmd.AddCommand(travelCmd)
+
+	// Sync command
+	rootCmd.AddCommand(syncCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {
