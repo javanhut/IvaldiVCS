@@ -960,6 +960,18 @@ func (rs *RepoSyncer) SyncTimeline(ctx context.Context, owner, repo, branch stri
 		return nil, fmt.Errorf("failed to get remote branch info: %w", err)
 	}
 
+	// Check if we already have this remote commit SHA stored
+	// If the GitHub SHA matches what we have locally, there are no changes
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err == nil {
+		defer refsManager.Close()
+		timeline, err := refsManager.GetTimeline(branch, refs.LocalTimeline)
+		if err == nil && timeline.GitSHA1Hash == branchInfo.Commit.SHA {
+			// Remote hasn't changed since last sync
+			return &TimelineDelta{NoChanges: true}, nil
+		}
+	}
+
 	// Get the remote tree
 	remoteTree, err := rs.client.GetTree(ctx, owner, repo, branchInfo.Commit.SHA, true)
 	if err != nil {
