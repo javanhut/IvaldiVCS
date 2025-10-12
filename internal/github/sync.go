@@ -3,7 +3,9 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1013,15 +1015,21 @@ func (rs *RepoSyncer) SyncTimeline(ctx context.Context, owner, repo, branch stri
 	}
 
 	// Check for added and modified files
-	for remotePath := range remoteFiles {
-		if _, existsLocally := localFiles[remotePath]; !existsLocally {
+	for remotePath, remoteSHA := range remoteFiles {
+		localContent, existsLocally := localFiles[remotePath]
+		if !existsLocally {
 			// File is new on remote
 			delta.AddedFiles = append(delta.AddedFiles, remotePath)
 		} else {
-			// File exists both locally and remotely - check if modified
-			// For simplicity, we'll compare by downloading and hashing
-			// In a more sophisticated implementation, we'd compare SHAs
-			delta.ModifiedFiles = append(delta.ModifiedFiles, remotePath)
+			// File exists both locally and remotely - check if content changed
+			// Compute Git blob SHA for local content to compare with GitHub SHA
+			localGitSHA := computeGitBlobSHA(localContent)
+
+			if localGitSHA != remoteSHA {
+				// Content has changed
+				delta.ModifiedFiles = append(delta.ModifiedFiles, remotePath)
+			}
+			// If SHAs match, file is unchanged - don't add to any list
 		}
 	}
 
@@ -1228,4 +1236,13 @@ func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineNa
 
 	fmt.Printf("Successfully harvested timeline '%s' (workspace preserved)\n", timelineName)
 	return nil
+}
+
+// computeGitBlobSHA computes the Git blob SHA-1 hash for content
+// Git blob format: "blob <size>\0<content>"
+func computeGitBlobSHA(content []byte) string {
+	header := fmt.Sprintf("blob %d\x00", len(content))
+	fullContent := append([]byte(header), content...)
+	hash := sha1.Sum(fullContent)
+	return hex.EncodeToString(hash[:])
 }
