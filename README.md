@@ -1,7 +1,5 @@
 # Ivaldi VCS
 
-#small change to test
-
 A modern version control system designed as a Git alternative with enhanced features like timeline-based branching, content-addressable storage, and seamless GitHub integration.
 
 ## Video Demo
