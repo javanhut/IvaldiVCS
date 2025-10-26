@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/javanhut/Ivaldi-vcs/internal/butterfly"
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
@@ -183,6 +184,21 @@ var listTimelineCmd = &cobra.Command{
 			log.Printf("Warning: Failed to list tags: %v", err)
 		}
 
+		// Initialize butterfly manager for timeline listing
+		objectsDir := filepath.Join(ivaldiDir, "objects")
+		casStore, _ := cas.NewFileCAS(objectsDir)
+		var bfManager *butterfly.Manager
+		if casStore != nil {
+			mmr, err := history.NewPersistentMMR(casStore, ivaldiDir)
+			if err == nil {
+				defer mmr.Close()
+				bfManager, _ = butterfly.NewManager(ivaldiDir, casStore, refsManager, mmr)
+				if bfManager != nil {
+					defer bfManager.Close()
+				}
+			}
+		}
+
 		// Display results
 		if len(localTimelines) > 0 {
 			fmt.Println("Local Timelines:")
@@ -191,7 +207,13 @@ var listTimelineCmd = &cobra.Command{
 				if currentTimeline == timeline.Name {
 					marker = "* " // Mark current timeline
 				}
-				fmt.Printf("%s%s\t%s\n", marker, timeline.Name, timeline.Description)
+
+				butterflyIcon := ""
+				if bfManager != nil && bfManager.IsButterfly(timeline.Name) {
+					butterflyIcon = " 🦋"
+				}
+
+				fmt.Printf("%s%s%s\t%s\n", marker, timeline.Name, butterflyIcon, timeline.Description)
 			}
 		} else {
 			fmt.Println("No local timelines found.")

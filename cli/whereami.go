@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/javanhut/Ivaldi-vcs/internal/butterfly"
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
+	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/spf13/cobra"
@@ -59,7 +61,34 @@ var whereamiCmd = &cobra.Command{
 
 		// Display basic timeline info
 		fmt.Printf("Timeline: %s\n", colors.Bold(currentTimelineName))
-		fmt.Printf("Type: %s\n", colors.InfoText("Local Timeline"))
+
+		// Check if this is a butterfly timeline
+		objectsDir := filepath.Join(ivaldiDir, "objects")
+		casStore, err := cas.NewFileCAS(objectsDir)
+		if err == nil {
+			mmr, err := history.NewPersistentMMR(casStore, ivaldiDir)
+			if err == nil {
+				defer mmr.Close()
+				bfManager, err := butterfly.NewManager(ivaldiDir, casStore, refsManager, mmr)
+				if err == nil {
+					defer bfManager.Close()
+					if bfManager.IsButterfly(currentTimelineName) {
+						bf, err := bfManager.GetButterflyInfo(currentTimelineName)
+						if err == nil {
+							displayButterflyInfo(bf, bfManager)
+						}
+					} else {
+						fmt.Printf("Type: %s\n", colors.InfoText("Standard"))
+					}
+				} else {
+					fmt.Printf("Type: %s\n", colors.InfoText("Standard"))
+				}
+			} else {
+				fmt.Printf("Type: %s\n", colors.InfoText("Standard"))
+			}
+		} else {
+			fmt.Printf("Type: %s\n", colors.InfoText("Standard"))
+		}
 
 		// Get last commit information if timeline has commits
 		if timeline.Blake3Hash != [32]byte{} {
@@ -88,6 +117,35 @@ var whereamiCmd = &cobra.Command{
 		fmt.Println()
 		return nil
 	},
+}
+
+// displayButterflyInfo shows butterfly-specific information
+func displayButterflyInfo(bf *butterfly.Butterfly, bfManager *butterfly.Manager) {
+	if bf.IsOrphaned {
+		fmt.Printf("Type: %s %s\n", colors.InfoText("Butterfly"), colors.Dim("(Orphaned)"))
+		fmt.Printf("Original parent: %s %s\n", colors.Cyan(bf.OriginalParent), colors.Dim("(deleted)"))
+	} else {
+		fmt.Printf("Type: %s\n", colors.InfoText("Butterfly 🦋"))
+		fmt.Printf("Parent: %s\n", colors.Cyan(bf.ParentName))
+	}
+
+	fmt.Printf("Divergence: %s\n", colors.Dim(hex.EncodeToString(bf.DivergenceHash[:])[:16]))
+
+	children, _ := bfManager.GetChildren(bf.Name)
+	if len(children) > 0 {
+		fmt.Printf("Nested butterflies: %s (", colors.Green(fmt.Sprintf("%d", len(children))))
+		for i, child := range children {
+			if i > 0 {
+				fmt.Print(", ")
+			}
+			fmt.Print(child)
+			if i >= 2 && len(children) > 3 {
+				fmt.Printf(", ... %d more", len(children)-3)
+				break
+			}
+		}
+		fmt.Println(")")
+	}
 }
 
 // displayCommitInfo shows information about the last commit (now called seal)

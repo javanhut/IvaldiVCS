@@ -50,6 +50,8 @@ func init() {
 	// Timeline management commands
 	rootCmd.AddCommand(timelineCmd)
 	timelineCmd.AddCommand(createTimelineCmd, switchTimelineCmd, listTimelineCmd, removeTimelineCmd)
+	timelineCmd.AddCommand(butterflyCmd)
+	butterflyCmd.AddCommand(butterflyUpCmd, butterflyDownCmd, butterflyRemoveCmd)
 
 	// File and commit management commands
 	rootCmd.AddCommand(gatherCmd)
