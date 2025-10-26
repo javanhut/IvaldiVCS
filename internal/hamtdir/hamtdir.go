@@ -30,20 +30,29 @@ type EntryType uint8
 const (
 	FileEntry EntryType = iota + 1
 	DirEntry
+	SubmoduleEntry
 )
 
 // Entry represents a single directory entry.
 type Entry struct {
-	Name string
-	Type EntryType
-	File *filechunk.NodeRef // Set if Type == FileEntry
-	Dir  *DirRef            // Set if Type == DirEntry
+	Name      string
+	Type      EntryType
+	File      *filechunk.NodeRef // Set if Type == FileEntry
+	Dir       *DirRef            // Set if Type == DirEntry
+	Submodule *SubmoduleRef      // Set if Type == SubmoduleEntry
+}
+
+// SubmoduleRef represents a reference to a submodule.
+type SubmoduleRef struct {
+	NodeHash   cas.Hash // BLAKE3 hash of SubmoduleNode object
+	CommitHash cas.Hash // BLAKE3 hash of target commit (denormalized)
+	URL        string   // Repository URL (denormalized for display)
 }
 
 // DirRef represents a reference to a directory HAMT.
 type DirRef struct {
 	Hash cas.Hash // BLAKE3 hash of the directory
-	Size int       // Number of entries in the directory tree
+	Size int      // Number of entries in the directory tree
 }
 
 // Node represents a HAMT node.
@@ -53,8 +62,8 @@ type Node struct {
 	Entries []Entry // Only for leaf nodes
 
 	// For internal nodes
-	Bitmap   uint32            // 32-bit bitmap indicating which children exist
-	Children map[int]cas.Hash  // Map from bit position to child hash
+	Bitmap   uint32           // 32-bit bitmap indicating which children exist
+	Children map[int]cas.Hash // Map from bit position to child hash
 }
 
 // Builder constructs directory HAMTs.
@@ -159,16 +168,16 @@ func (b *Builder) buildLeaf(entries []Entry) (DirRef, error) {
 // hashChunk extracts a 5-bit chunk from the hash of a name at given depth.
 func (b *Builder) hashChunk(name string, depth int) uint32 {
 	hash := cas.SumB3([]byte(name))
-	
+
 	// Extract 5 bits starting at bit position depth*5
 	bitOffset := depth * 5
 	byteOffset := bitOffset / 8
 	bitWithinByte := bitOffset % 8
-	
+
 	if byteOffset >= len(hash) {
 		return 0
 	}
-	
+
 	// Extract up to 16 bits to handle cross-byte boundaries
 	var bits uint16
 	if byteOffset+1 < len(hash) {
@@ -176,7 +185,7 @@ func (b *Builder) hashChunk(name string, depth int) uint32 {
 	} else {
 		bits = uint16(hash[byteOffset])
 	}
-	
+
 	// Shift and mask to get our 5-bit chunk
 	chunk := (bits >> bitWithinByte) & 0x1F // 0x1F = 31 = 2^5-1
 	return uint32(chunk)
@@ -371,22 +380,22 @@ func (l *Loader) listNode(nodeHash cas.Hash) ([]Entry, error) {
 // hashChunk extracts a 5-bit chunk from the hash (same as Builder).
 func (l *Loader) hashChunk(name string, depth int) uint32 {
 	hash := cas.SumB3([]byte(name))
-	
+
 	bitOffset := depth * 5
 	byteOffset := bitOffset / 8
 	bitWithinByte := bitOffset % 8
-	
+
 	if byteOffset >= len(hash) {
 		return 0
 	}
-	
+
 	var bits uint16
 	if byteOffset+1 < len(hash) {
 		bits = uint16(hash[byteOffset]) | (uint16(hash[byteOffset+1]) << 8)
 	} else {
 		bits = uint16(hash[byteOffset])
 	}
-	
+
 	chunk := (bits >> bitWithinByte) & 0x1F
 	return uint32(chunk)
 }
@@ -402,7 +411,7 @@ func (l *Loader) decodeNode(data []byte) (*Node, error) {
 	} else if data[0] == 0x01 {
 		return l.decodeInternal(data)
 	}
-	
+
 	return nil, fmt.Errorf("invalid node encoding: unknown marker %02x", data[0])
 }
 
@@ -417,7 +426,7 @@ func (l *Loader) decodeLeaf(data []byte) (*Node, error) {
 	}
 
 	entries := make([]Entry, 0, entryCount)
-	
+
 	for i := uint64(0); i < entryCount; i++ {
 		// Read key length and key
 		keyLen, err := binary.ReadUvarint(buf)
@@ -559,12 +568,12 @@ func (l *Loader) walkNode(nodeHash cas.Hash, pathPrefix string, walkFn func(stri
 			if pathPrefix != "" {
 				fullPath = pathPrefix + "/" + entry.Name
 			}
-			
+
 			err := walkFn(fullPath, entry)
 			if err != nil {
 				return err
 			}
-			
+
 			// If it's a directory, recurse into it
 			if entry.Type == DirEntry && entry.Dir != nil {
 				err = l.walkNode(entry.Dir.Hash, fullPath, walkFn)
@@ -596,16 +605,16 @@ func (l *Loader) PathLookup(root DirRef, path string) (*Entry, error) {
 	if path == "" || path == "/" {
 		return nil, fmt.Errorf("invalid path")
 	}
-	
+
 	// Clean and split path
 	path = strings.Trim(path, "/")
 	if path == "" {
 		return nil, fmt.Errorf("empty path")
 	}
-	
+
 	components := strings.Split(path, "/")
 	currentDir := root
-	
+
 	for i, component := range components {
 		entry, err := l.Lookup(currentDir, component)
 		if err != nil {
@@ -614,19 +623,19 @@ func (l *Loader) PathLookup(root DirRef, path string) (*Entry, error) {
 		if entry == nil {
 			return nil, nil // Not found
 		}
-		
+
 		// If this is the last component, return it
 		if i == len(components)-1 {
 			return entry, nil
 		}
-		
+
 		// Must be a directory to continue
 		if entry.Type != DirEntry || entry.Dir == nil {
 			return nil, fmt.Errorf("path component '%s' is not a directory", component)
 		}
-		
+
 		currentDir = *entry.Dir
 	}
-	
+
 	return nil, fmt.Errorf("path traversal failed")
 }

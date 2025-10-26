@@ -16,6 +16,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
+	"github.com/javanhut/Ivaldi-vcs/internal/converter"
 	"github.com/javanhut/Ivaldi-vcs/internal/github"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
@@ -171,6 +172,46 @@ func handleGitHubDownload(rawURL string, args []string) error {
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 
+	// Automatically detect and convert Git submodules (enabled by default)
+	if recurseSubmodules {
+		gitmodulesPath := filepath.Join(workDir, ".gitmodules")
+		if _, err := os.Stat(gitmodulesPath); err == nil {
+			log.Println("📦 Detected Git submodules, converting to Ivaldi format...")
+
+			gitDir := filepath.Join(workDir, ".git")
+			submoduleResult, err := converter.ConvertGitSubmodulesToIvaldi(
+				gitDir,
+				ivaldiDir,
+				workDir,
+				true, // recursive
+			)
+
+			if err != nil {
+				log.Printf("Warning: Submodule conversion encountered errors: %v", err)
+			}
+
+			if submoduleResult != nil {
+				if submoduleResult.Converted > 0 {
+					log.Printf("✓ Converted %d Git submodules", submoduleResult.Converted)
+				}
+				if submoduleResult.ClonedModules > 0 {
+					log.Printf("✓ Cloned %d missing submodules", submoduleResult.ClonedModules)
+				}
+				if submoduleResult.Skipped > 0 {
+					log.Printf("⚠ Skipped %d submodules due to errors", submoduleResult.Skipped)
+					for i, err := range submoduleResult.Errors {
+						if i < 3 {
+							log.Printf("  - %v", err)
+						}
+					}
+					if len(submoduleResult.Errors) > 3 {
+						log.Printf("  ... and %d more errors", len(submoduleResult.Errors)-3)
+					}
+				}
+			}
+		}
+	}
+
 	fmt.Printf("Successfully downloaded repository from GitHub\n")
 	return nil
 }
@@ -274,6 +315,9 @@ Examples:
 		return nil
 	},
 }
+
+var recurseSubmodules bool
+var statusVerbose bool
 
 var downloadCmd = &cobra.Command{
 	Use:     "download <url> [directory]",
@@ -741,7 +785,8 @@ var sealCmd = &cobra.Command{
 }
 
 func init() {
-	gatherCmd.Flags().BoolP("allow-all", "a", false, "Gather all files including dot files without prompting (shows warnings)")
+	statusCmd.Flags().BoolVar(&statusVerbose, "verbose", false, "Show more detailed status information")
+	downloadCmd.Flags().BoolVar(&recurseSubmodules, "recurse-submodules", true, "Automatically clone and convert Git submodules (default: true)")
 }
 
 // isAutoExcluded checks if a file matches auto-exclude patterns (.env, .venv, etc.)

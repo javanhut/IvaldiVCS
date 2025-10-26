@@ -140,6 +140,39 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 					log.Printf("Skipped %d Git objects due to errors", gitResult.Skipped)
 				}
 			}
+
+			if _, err := os.Stat(".gitmodules"); err == nil {
+				log.Println("📦 Detected Git submodules, converting to Ivaldi format...")
+
+				submoduleResult, err := converter.ConvertGitSubmodulesToIvaldi(
+					".git",
+					ivaldiDir,
+					workDir,
+					true,
+				)
+
+				if err != nil {
+					log.Printf("Warning: Submodule conversion encountered errors: %v", err)
+				}
+
+				if submoduleResult.Converted > 0 {
+					log.Printf("✓ Converted %d Git submodules", submoduleResult.Converted)
+				}
+				if submoduleResult.ClonedModules > 0 {
+					log.Printf("✓ Cloned %d missing submodules", submoduleResult.ClonedModules)
+				}
+				if submoduleResult.Skipped > 0 {
+					log.Printf("⚠ Skipped %d submodules due to errors", submoduleResult.Skipped)
+					for i, err := range submoduleResult.Errors {
+						if i < 3 {
+							log.Printf("  - %v", err)
+						}
+					}
+					if len(submoduleResult.Errors) > 3 {
+						log.Printf("  ... and %d more errors", len(submoduleResult.Errors)-3)
+					}
+				}
+			}
 		} else {
 			// Initialize default timeline for new repository
 			log.Println("Creating default 'main' timeline...")
