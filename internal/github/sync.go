@@ -480,10 +480,10 @@ type blobUploadJob struct {
 
 // blobUploadResult represents the result of a blob upload
 type blobUploadResult struct {
-	path  string
-	mode  string
-	sha   string
-	err   error
+	path string
+	mode string
+	sha  string
+	err  error
 }
 
 // createBlobsParallel uploads blobs in parallel
@@ -622,8 +622,12 @@ func (rs *RepoSyncer) UploadFile(ctx context.Context, owner, repo, path, branch,
 }
 
 // PushCommit pushes an Ivaldi commit to GitHub as a single commit with delta optimization
-func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string, commitHash cas.Hash) error {
-	fmt.Printf("Pushing commit %s to GitHub...\n", commitHash.String()[:8])
+func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string, commitHash cas.Hash, force bool) error {
+	if force {
+		fmt.Printf("Force pushing commit %s to GitHub...\n", commitHash.String()[:8])
+	} else {
+		fmt.Printf("Pushing commit %s to GitHub...\n", commitHash.String()[:8])
+	}
 
 	// Check if branch exists on GitHub
 	branchInfo, err := rs.client.GetBranch(ctx, owner, repo, branch)
@@ -847,7 +851,8 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	} else {
 		// Update existing branch reference
 		updateReq := UpdateRefRequest{
-			SHA: commitResp.SHA,
+			SHA:   commitResp.SHA,
+			Force: force, // Use force flag for ref update
 		}
 		err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", branch), updateReq)
 		if err != nil {
