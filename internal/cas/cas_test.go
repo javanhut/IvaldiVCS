@@ -78,38 +78,66 @@ func TestMemoryCASConcurrency(t *testing.T) {
 	data := []byte("concurrent test data")
 	hash := SumB3(data)
 
+	// First ensure data is written
+	err := cas.Put(hash, data)
+	if err != nil {
+		t.Fatalf("initial Put failed: %v", err)
+	}
+
 	// Test concurrent access
-	done := make(chan bool, 10)
-	
+	done := make(chan error, 15)
+
 	// Multiple goroutines writing the same data
 	for i := 0; i < 5; i++ {
 		go func() {
-			defer func() { done <- true }()
 			err := cas.Put(hash, data)
-			if err != nil {
-				t.Errorf("Concurrent Put failed: %v", err)
-			}
+			done <- err
 		}()
 	}
 
 	// Multiple goroutines reading
 	for i := 0; i < 5; i++ {
 		go func() {
-			defer func() { done <- true }()
-			// Wait a bit for puts to complete
-			for j := 0; j < 100; j++ {
-				retrieved, err := cas.Get(hash)
-				if err == nil && bytes.Equal(data, retrieved) {
-					return
-				}
+			retrieved, err := cas.Get(hash)
+			if err != nil {
+				done <- err
+				return
 			}
-			t.Error("Concurrent Get failed")
+			if !bytes.Equal(data, retrieved) {
+				done <- bytes.ErrTooLarge
+				return
+			}
+			done <- nil
 		}()
 	}
 
-	// Wait for all goroutines
-	for i := 0; i < 10; i++ {
-		<-done
+	// Multiple goroutines checking Has
+	for i := 0; i < 5; i++ {
+		go func() {
+			has, err := cas.Has(hash)
+			if err != nil {
+				done <- err
+				return
+			}
+			if !has {
+				done <- bytes.ErrTooLarge
+				return
+			}
+			done <- nil
+		}()
+	}
+
+	// Wait for all goroutines and check for errors
+	errors := 0
+	for i := 0; i < 15; i++ {
+		if err := <-done; err != nil {
+			errors++
+			t.Logf("Goroutine %d failed: %v", i, err)
+		}
+	}
+
+	if errors > 0 {
+		t.Errorf("Concurrent operations failed: %d goroutines reported errors", errors)
 	}
 }
 
@@ -128,7 +156,7 @@ func BenchmarkSumB3(b *testing.B) {
 func BenchmarkMemoryCASPut(b *testing.B) {
 	cas := NewMemoryCAS()
 	data := []byte("benchmark data")
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		hash := SumB3(append(data, byte(i%256)))

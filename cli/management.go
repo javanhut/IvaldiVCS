@@ -414,12 +414,41 @@ var gatherCmd = &cobra.Command{
 					return err
 				}
 
-				// Skip directories
+				// Handle directories - check exclusions BEFORE deciding to skip
 				if info.IsDir() {
+					// Skip .ivaldi directory
+					if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+						return filepath.SkipDir
+					}
+
+					// Check if directory is auto-excluded
+					if isAutoExcluded(relPath) {
+						log.Printf("Auto-excluded directory for security: %s", relPath)
+						return filepath.SkipDir
+					}
+
+					// Check if directory matches ignore patterns
+					// Try both with and without trailing slash
+					if isFileIgnored(relPath, ignorePatterns) || isFileIgnored(relPath+"/", ignorePatterns) {
+						log.Printf("Skipping ignored directory: %s", relPath)
+						return filepath.SkipDir
+					}
+
+					// Check for hidden directories (except .ivaldiignore parent)
+					if filepath.Base(path)[0] == '.' && relPath != "." {
+						if !allowAll {
+							log.Printf("Skipping hidden directory: %s", relPath)
+							return filepath.SkipDir
+						}
+					}
+
+					// Directory is not excluded, continue into it
 					return nil
 				}
 
-				// Skip .ivaldi directory
+				// From here on, we're dealing with files only
+
+				// Skip .ivaldi directory files (shouldn't happen but just in case)
 				if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
 					return nil
 				}
@@ -430,7 +459,7 @@ var gatherCmd = &cobra.Command{
 					return nil
 				}
 
-				// Skip hidden files/dirs EXCEPT .ivaldiignore
+				// Skip hidden files EXCEPT .ivaldiignore
 				if filepath.Base(path)[0] == '.' && relPath != ".ivaldiignore" {
 					// Prompt user for dot files unless --allow-all is set
 					if !allowAll {
@@ -477,23 +506,51 @@ var gatherCmd = &cobra.Command{
 							return err
 						}
 
-						// Skip directories
-						if info.IsDir() {
-							return nil
-						}
-
-						// Skip hidden files and directories
-						if strings.Contains(path, "/.") {
-							return nil
-						}
-
 						// Get relative path from working directory
 						relPath, err := filepath.Rel(workDir, path)
 						if err != nil {
 							return err
 						}
 
-						// Skip .ivaldi directory
+						// Handle directories - check exclusions BEFORE deciding to skip
+						if info.IsDir() {
+							// Skip .ivaldi directory
+							if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+								return filepath.SkipDir
+							}
+
+							// Check if directory is auto-excluded
+							if isAutoExcluded(relPath) {
+								log.Printf("Auto-excluded directory for security: %s", relPath)
+								return filepath.SkipDir
+							}
+
+							// Check if directory matches ignore patterns
+							if isFileIgnored(relPath, ignorePatterns) || isFileIgnored(relPath+"/", ignorePatterns) {
+								log.Printf("Skipping ignored directory: %s", relPath)
+								return filepath.SkipDir
+							}
+
+							// Check for hidden directories
+							if strings.Contains(path, "/.") && relPath != "." {
+								if !allowAll {
+									log.Printf("Skipping hidden directory: %s", relPath)
+									return filepath.SkipDir
+								}
+							}
+
+							// Directory is not excluded, continue into it
+							return nil
+						}
+
+						// From here on, we're dealing with files only
+
+						// Skip hidden files and directories
+						if strings.Contains(path, "/.") {
+							return nil
+						}
+
+						// Skip .ivaldi directory files
 						if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
 							return nil
 						}
@@ -619,6 +676,10 @@ var gatherCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func init() {
+	gatherCmd.Flags().Bool("allow-all", false, "Allow gathering all hidden files without prompting")
 }
 
 var sealCmd = &cobra.Command{
