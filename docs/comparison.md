@@ -176,12 +176,13 @@ ivaldi fuse --strategy=theirs feature to main
 | Branches | Timelines | Enhanced with auto-shelving |
 | Commits | Seals | Added memorable names |
 | Tags | Not yet implemented | Coming soon |
-| Submodules | Not yet implemented | Coming soon |
+| Submodules | Automatic conversion | Auto-detects and converts Git submodules |
 | Hooks | Not yet implemented | Coming soon |
 | LFS | Built-in chunking | No separate extension needed |
 | Reflog | MMR history | Append-only, tamper-proof |
 | Cherry-pick | Time travel diverge | Interactive |
-| Rebase | Time travel | Non-destructive option |
+| Rebase (squash) | Shift | Interactive with arrow keys |
+| Rebase (interactive) | Time travel | Non-destructive option |
 | Bisect | Not yet implemented | Coming soon |
 
 ### Ivaldi-Only Features
@@ -190,12 +191,15 @@ Features Ivaldi has that Git doesn't:
 
 1. **Auto-Shelving**: Automatic preservation of changes when switching
 2. **Memorable Seal Names**: Human-friendly commit identifiers
-3. **Interactive Time Travel**: Arrow-key navigation through history
-4. **Selective Sync**: Download only specific branches
-5. **Chunk-Level Merging**: 64KB chunks with BLAKE3 hashing
-6. **Clean Conflict Resolution**: No markers in workspace files
-7. **Content-Addressable Storage**: Automatic deduplication
-8. **Merkle Mountain Range**: Cryptographic commit proofs
+3. **Butterfly Timelines**: Experimental sandboxes with bidirectional sync
+4. **Interactive Commit Squashing**: Arrow-key selection for clean history
+5. **Interactive Time Travel**: Arrow-key navigation through history
+6. **Automatic Submodule Conversion**: Seamless Git submodule migration
+7. **Selective Sync**: Download only specific branches
+8. **Chunk-Level Merging**: 64KB chunks with BLAKE3 hashing
+9. **Clean Conflict Resolution**: No markers in workspace files
+10. **Content-Addressable Storage**: Automatic deduplication
+11. **Merkle Mountain Range**: Cryptographic commit proofs
 
 ## Workflow Comparison
 
@@ -243,6 +247,33 @@ ivaldi timeline switch main
 ivaldi fuse feature to main
 ivaldi upload
 ivaldi timeline remove feature
+```
+
+### Experimental Development
+
+**Git:**
+```bash
+git checkout -b experiment
+# make multiple WIP commits
+git add .
+git commit -m "WIP 1"
+git commit -m "WIP 2"
+git commit -m "WIP 3"
+# Clean up with rebase
+git rebase -i HEAD~3  # Opens editor, manual squash
+git push --force
+```
+
+**Ivaldi:**
+```bash
+ivaldi timeline butterfly experiment
+# make multiple commits
+ivaldi seal "WIP 1"
+ivaldi seal "WIP 2"
+ivaldi seal "WIP 3"
+# Clean up with shift
+ivaldi shift --last 3  # Interactive arrow-key selection
+ivaldi timeline butterfly up  # Merge to parent
 ```
 
 ### Hotfix
@@ -338,7 +369,10 @@ Ivaldi repositories are Git-compatible:
 - **Intuitive commands**: `forge`, `gather`, `seal` vs `init`, `add`, `commit`
 - **Memorable names**: `swift-eagle` vs `a1b2c3d`
 - **Auto-shelving**: No manual stashing
+- **Butterfly timelines**: Safe experimental sandboxes with easy sync
+- **Interactive squashing**: Arrow-key selection vs text editor
 - **Clean merges**: No conflict markers in files
+- **Auto-submodules**: Automatic Git submodule conversion
 
 ### 2. Performance
 
@@ -424,8 +458,11 @@ Ivaldi may be easier to learn:
 
 **Ivaldi improves on Git with:**
 - Auto-shelving timelines
+- Butterfly experimental timelines
 - Memorable seal names
+- Interactive commit squashing
 - Selective sync
+- Automatic submodule conversion
 - Clean conflict resolution
 - Modern cryptography (BLAKE3)
 - Interactive time travel

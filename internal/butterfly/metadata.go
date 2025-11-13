@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -189,14 +188,4 @@ func (s *MetadataStore) MarkOrphaned(name string, originalParent string) error {
 	bf.IsOrphaned = true
 	bf.OriginalParent = originalParent
 	return s.StoreButterfly(bf)
-}
-
-func hashToBytes(h cas.Hash) []byte {
-	return h[:]
-}
-
-func bytesToHash(b []byte) cas.Hash {
-	var h cas.Hash
-	copy(h[:], b)
-	return h
 }

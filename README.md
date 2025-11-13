@@ -22,10 +22,13 @@ https://github.com/user-attachments/assets/128a8407-c5e5-4115-a3cb-24c2f48a71dd
 ## Features
 
 - **Timeline-Based Branching**: Intuitive branch management with auto-shelving
+- **Butterfly Timelines**: Experimental sandboxes with bidirectional sync for safe development
+- **Interactive Commit Squashing**: Clean up history with arrow-key navigation before pushing
 - **Modern Cryptography**: BLAKE3 hashing for security and performance
 - **Content-Addressable Storage**: Efficient deduplication and storage
 - **GitHub Integration**: Seamless clone, push, and pull operations
 - **Auto-Shelving**: Never lose work when switching branches
+- **Submodule Support**: Automatic Git submodule detection, conversion, and dual-hash tracking
 - **Selective Sync**: Download only the branches you need
 - **Merkle Mountain Range**: Append-only commit history with cryptographic proofs
 
@@ -141,6 +144,14 @@ ivaldi seals list
 # Create and switch timeline (branch)
 ivaldi timeline create feature-auth
 ivaldi timeline switch main
+
+# Create experimental timeline (butterfly)
+ivaldi timeline butterfly experiment
+# Make changes, test safely
+ivaldi timeline butterfly up  # Merge to parent when ready
+
+# Clean up commit history before pushing
+ivaldi shift --last 5  # Interactive squash
 ```
 
 ### GitHub Integration
@@ -155,7 +166,7 @@ ivaldi auth status
 # Connect to GitHub repository
 ivaldi portal add owner/repo
 
-# Clone from GitHub
+# Clone from GitHub (auto-converts submodules!)
 ivaldi download owner/awesome-project
 
 # Discover remote branches
@@ -166,6 +177,9 @@ ivaldi harvest feature-auth bugfix-db
 
 # Push changes
 ivaldi upload
+
+# Force push after squashing
+ivaldi upload --force
 ```
 
 ## Core Concepts
@@ -174,6 +188,7 @@ ivaldi upload
 Timelines are Ivaldi's equivalent to Git branches, but with enhanced features:
 - **Auto-shelving**: Uncommitted changes are automatically preserved when switching
 - **Workspace isolation**: Each timeline maintains its own workspace state
+- **Butterfly timelines**: Experimental sandboxes with bidirectional sync (up/down)
 - **Efficient storage**: Shared content between timelines via content-addressable storage
 
 ### Gather and Seal
@@ -182,10 +197,22 @@ Ivaldi uses intuitive command names with enhanced user experience:
 - `seal`: Create commit with auto-generated human-friendly names (like `git commit`)
 - `seals`: Manage seals with memorable names like "swift-eagle-flies-high-447abe9b"
 
+### Shift (Commit Squashing)
+Clean up your commit history before pushing:
+- **Interactive selection**: Use arrow keys to select commit range
+- **Safety confirmations**: Multiple steps to prevent accidents
+- **Force push warnings**: Clear guidance on rewriting history
+
 ### Scout and Harvest
 Remote operations are designed for selective collaboration:
 - `scout`: Discover available remote branches
 - `harvest`: Download only the branches you need
+
+### Submodules
+Automatic Git submodule support:
+- **Auto-detection**: Finds and converts Git submodules automatically
+- **Dual-hash tracking**: BLAKE3 for Ivaldi, Git SHA-1 for GitHub compatibility
+- **Timeline-aware**: Submodules track state per timeline
 
 ## Documentation
 
@@ -336,20 +363,26 @@ You upload the code to github with upload keyword not a push.
 | Diff | `git diff` | `ivaldi diff` |
 | Branch | `git branch` | `ivaldi timeline create` |
 | Switch branch | `git checkout` | `ivaldi timeline switch` |
+| Experimental branch | (manual) | `ivaldi timeline butterfly` |
 | Merge | `git merge` | `ivaldi fuse` |
+| Squash commits | `git rebase -i` | `ivaldi shift` |
 | Clone | `git clone` | `ivaldi download` |
 | Push | `git push` | `ivaldi upload` |
 | Fetch | `git fetch` | `ivaldi harvest` |
+| Submodules | `git submodule` | (automatic) |
 
 ## Advantages over Git
 
 1. **Intuitive Commands**: Clear, descriptive command names
 2. **Human-Friendly Seals**: Commits get memorable names like "swift-eagle-flies-high-447abe9b"
 3. **Auto-Shelving**: Never lose work when switching branches
-4. **Selective Sync**: Download only branches you need
-5. **Modern Hashing**: BLAKE3 for better security and performance
-6. **Clean Storage**: Content-addressable storage with automatic deduplication
-7. **GitHub Integration**: First-class GitHub support built-in
+4. **Butterfly Timelines**: Safe experimental sandboxes with easy merge up/down
+5. **Interactive Squashing**: Arrow-key commit selection vs text editor rebase
+6. **Automatic Submodules**: Git submodules auto-detected and converted
+7. **Selective Sync**: Download only branches you need
+8. **Modern Hashing**: BLAKE3 for better security and performance
+9. **Clean Storage**: Content-addressable storage with automatic deduplication
+10. **GitHub Integration**: First-class GitHub support built-in
 
 ## Development
 

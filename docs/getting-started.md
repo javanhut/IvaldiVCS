@@ -168,6 +168,27 @@ ivaldi timeline switch main
 ivaldi fuse feature-login to main
 ```
 
+### Experimental Timelines (Butterflies)
+
+For safe experimentation without polluting your main timeline:
+
+```bash
+# Create an experimental timeline (butterfly)
+ivaldi timeline butterfly experiment
+
+# Make experimental changes
+ivaldi gather .
+ivaldi seal "Try new approach"
+
+# If successful, merge up to parent
+ivaldi timeline butterfly up
+
+# Or pull parent changes down
+ivaldi timeline butterfly down
+```
+
+Butterflies are perfect for trying out ideas without committing to a full feature branch.
+
 ## GitHub Integration
 
 ### Connect to GitHub
@@ -213,6 +234,39 @@ ivaldi harvest feature-payments
 ivaldi harvest
 ```
 
+## Advanced Workflows
+
+### Clean Up Commit History
+
+Before pushing to GitHub, you can squash multiple commits into one:
+
+```bash
+# Squash last 3 commits interactively
+ivaldi shift --last 3
+
+# Or use interactive selection
+ivaldi shift
+# Use arrow keys to select range
+
+# After squashing, force push
+ivaldi upload --force
+```
+
+### Working with Submodules
+
+Ivaldi automatically handles Git submodules:
+
+```bash
+# Clone a repository with submodules
+ivaldi download owner/repo-with-submodules
+# Submodules are automatically detected and converted!
+
+# Or convert existing Git repo with submodules
+cd git-repo-with-submodules
+ivaldi forge
+# All submodules automatically initialized and converted
+```
+
 ## Essential Commands Summary
 
 | Command | Purpose | Example |
@@ -224,7 +278,9 @@ ivaldi harvest
 | `ivaldi whereami` | Current position | `ivaldi whereami` |
 | `ivaldi log` | View history | `ivaldi log --limit 10` |
 | `ivaldi timeline create` | New timeline | `ivaldi timeline create feature-x` |
+| `ivaldi timeline butterfly` | Experimental timeline | `ivaldi timeline butterfly experiment` |
 | `ivaldi timeline switch` | Change timeline | `ivaldi timeline switch main` |
+| `ivaldi shift` | Squash commits | `ivaldi shift --last 3` |
 | `ivaldi fuse` | Merge timelines | `ivaldi fuse feature to main` |
 | `ivaldi portal add` | Connect GitHub | `ivaldi portal add owner/repo` |
 | `ivaldi upload` | Push to GitHub | `ivaldi upload` |

@@ -20,6 +20,8 @@ Complete reference for all Ivaldi commands.
 | [diff](diff.md) | Compare changes | `git diff` |
 | [reset](reset.md) | Unstage or reset | `git reset` |
 | [timeline](timeline.md) | Manage timelines | `git branch` / `git checkout` |
+| [butterfly](butterfly.md) | Experimental timelines | (custom) |
+| [shift](shift.md) | Squash commits interactively | `git rebase -i` (squash) |
 | [travel](travel.md) | Interactive time travel | (interactive `git log` + checkout) |
 | [fuse](fuse.md) | Merge timelines | `git merge` |
 | [auth](auth.md) | Authenticate with GitHub | (similar to `gh auth`) |
@@ -30,6 +32,7 @@ Complete reference for all Ivaldi commands.
 | [harvest](harvest.md) | Fetch branches | `git fetch` (data) |
 | [config](config.md) | Configure settings | `git config` |
 | [exclude](exclude.md) | Ignore files | (edit `.gitignore`) |
+| [submodule](submodule.md) | Manage submodules | `git submodule` (auto) |
 
 ## Commands by Category
 
@@ -49,9 +52,11 @@ Complete reference for all Ivaldi commands.
 - [log](log.md) - View commit history
 - [diff](diff.md) - Compare file changes
 - [travel](travel.md) - Interactively browse and navigate history
+- [shift](shift.md) - Squash commits for cleaner history
 
 ### Timeline Management
 - [timeline](timeline.md) - Create, switch, list, and remove timelines
+- [butterfly](butterfly.md) - Create and manage experimental timelines
 - [fuse](fuse.md) - Merge timelines together
 
 ### Remote Operations
@@ -61,6 +66,9 @@ Complete reference for all Ivaldi commands.
 - [upload](upload.md) - Push commits to GitHub
 - [scout](scout.md) - Discover available remote timelines
 - [harvest](harvest.md) - Download specific remote timelines
+
+### Submodule Management
+- [submodule](submodule.md) - Automatic Git submodule conversion and management
 
 ## Command Details
 
@@ -88,6 +96,22 @@ ivaldi gather .                      # Stage
 ivaldi seal "Add feature"           # Commit
 ivaldi timeline switch main         # Switch to main
 ivaldi fuse feature-name to main    # Merge
+```
+
+### Experimental Development with Butterflies
+```bash
+ivaldi timeline butterfly experiment  # Create experimental timeline
+# ... make experimental changes ...
+ivaldi seal "Try new approach"       # Commit changes
+ivaldi timeline butterfly up         # Merge to parent if successful
+# Or: ivaldi timeline butterfly down  # Pull parent changes
+```
+
+### Clean History Before Push
+```bash
+ivaldi shift --last 5               # Squash last 5 commits
+# Enter clean commit message
+ivaldi upload                        # Push clean history
 ```
 
 ### Collaboration
