@@ -306,18 +306,54 @@ Examples:
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
+		// Force push safety checks
+		if forceUpload {
+			fmt.Printf("\n%s Force push will OVERWRITE remote history!\n",
+				colors.Yellow("⚠ WARNING:"))
+			fmt.Println("This is a destructive operation that:")
+			fmt.Println("  • Rewrites commit history on the remote")
+			fmt.Println("  • Can cause issues for collaborators")
+			fmt.Println("  • Cannot be undone easily")
+			fmt.Println()
+			fmt.Printf("%s Consider creating a backup branch first:\n",
+				colors.Bold("💡 Tip:"))
+			fmt.Printf("  ivaldi timeline create backup-before-force-push\n")
+			fmt.Printf("  ivaldi upload github:%s/%s backup-before-force-push\n\n", owner, repo)
+
+			// Require explicit confirmation
+			fmt.Print("Type 'force push' to confirm: ")
+			reader := bufio.NewReader(os.Stdin)
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				return fmt.Errorf("failed to read confirmation: %w", err)
+			}
+
+			confirmation := strings.TrimSpace(input)
+			if confirmation != "force push" {
+				fmt.Println("Force push cancelled.")
+				return nil
+			}
+		}
+
 		fmt.Printf("Uploading to GitHub: %s/%s (branch: %s)...\n", owner, repo, branch)
-		if err := syncer.PushCommit(ctx, owner, repo, branch, commitHash); err != nil {
+		if err := syncer.PushCommit(ctx, owner, repo, branch, commitHash, forceUpload); err != nil {
 			return fmt.Errorf("failed to push to GitHub: %w", err)
 		}
 
-		fmt.Printf("Successfully uploaded to GitHub\n")
+		if forceUpload {
+			fmt.Printf("\n%s Force pushed to GitHub\n", colors.Green("✓"))
+			fmt.Printf("%s Make sure to notify collaborators about the history rewrite\n",
+				colors.Yellow("⚠"))
+		} else {
+			fmt.Printf("Successfully uploaded to GitHub\n")
+		}
 		return nil
 	},
 }
 
 var recurseSubmodules bool
 var statusVerbose bool
+var forceUpload bool
 
 var downloadCmd = &cobra.Command{
 	Use:     "download <url> [directory]",
@@ -848,6 +884,7 @@ var sealCmd = &cobra.Command{
 func init() {
 	statusCmd.Flags().BoolVar(&statusVerbose, "verbose", false, "Show more detailed status information")
 	downloadCmd.Flags().BoolVar(&recurseSubmodules, "recurse-submodules", true, "Automatically clone and convert Git submodules (default: true)")
+	uploadCmd.Flags().BoolVar(&forceUpload, "force", false, "Force push to remote (overwrites remote history - use with caution!)")
 }
 
 // isAutoExcluded checks if a file matches auto-exclude patterns (.env, .venv, etc.)

@@ -28,6 +28,7 @@ Understanding how Ivaldi differs from and improves upon Git.
 | Remote | `git remote add` | `ivaldi portal add` |
 | Stash | `git stash` | (automatic shelving) |
 | Rebase | `git rebase -i` | `ivaldi travel` (diverge) |
+| Squash commits | `git rebase -i` (squash) | `ivaldi shift` |
 | Ignore files | Edit `.gitignore` | `ivaldi exclude` |
 
 ## Conceptual Differences

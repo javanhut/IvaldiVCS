@@ -87,6 +87,9 @@ func init() {
 	// Time travel command
 	rootCmd.AddCommand(travelCmd)
 
+	// Shift command (commit squashing)
+	rootCmd.AddCommand(shiftCmd)
+
 	// Sync command
 	rootCmd.AddCommand(syncCmd)
 }
