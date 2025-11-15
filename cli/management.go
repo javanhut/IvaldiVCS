@@ -90,7 +90,7 @@ func parseGitHubURL(rawURL string) (owner, repo string, err error) {
 }
 
 // handleGitHubDownload handles downloading/cloning from GitHub
-func handleGitHubDownload(rawURL string, args []string) error {
+func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory bool, includeTags bool) error {
 	// Parse GitHub URL
 	owner, repo, err := parseGitHubURL(rawURL)
 	if err != nil {
@@ -165,11 +165,11 @@ func handleGitHubDownload(rawURL string, args []string) error {
 		return fmt.Errorf("failed to create syncer: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	fmt.Printf("Downloading from GitHub: %s/%s...\n", owner, repo)
-	if err := syncer.CloneRepository(ctx, owner, repo); err != nil {
+	if err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags); err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 
@@ -273,7 +273,7 @@ func parseGitLabURL(rawURL string) (owner, repo string, err error) {
 }
 
 // handleGitLabDownload handles downloading/cloning from GitLab
-func handleGitLabDownload(rawURL string, args []string, baseURL string) error {
+func handleGitLabDownload(rawURL string, args []string, baseURL string, depth int, skipHistory bool, includeTags bool) error {
 	// Parse GitLab URL with host detection
 	owner, repo, detectedHost, err := gitlab.ParseGitLabURLWithHost(rawURL)
 	if err != nil {
@@ -367,7 +367,7 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string) error {
 		return fmt.Errorf("failed to create syncer: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	if baseURL != "" {
@@ -375,7 +375,7 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string) error {
 	} else {
 		fmt.Printf("Downloading from GitLab: %s/%s...\n", owner, repo)
 	}
-	if err := syncer.CloneRepository(ctx, owner, repo); err != nil {
+	if err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags); err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 
@@ -390,9 +390,7 @@ var uploadCmd = &cobra.Command{
 	Long: `Uploads the current timeline to the configured GitHub repository. The repository is automatically detected from the configuration set during 'ivaldi download'.
 Examples:
   ivaldi upload                           # Upload current timeline to GitHub
-  ivaldi upload main                      # Upload to specific branch on GitHub
-  ivaldi upload github:owner/repo         # Upload to different GitHub repository (current timeline)
-  ivaldi upload github:owner/repo main    # Upload to different GitHub repository and branch`,
+  ivaldi upload main                      # Upload to specific branch on GitHub`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check if we're in an Ivaldi repository
 		ivaldiDir := ".ivaldi"
@@ -418,36 +416,19 @@ Examples:
 			return fmt.Errorf("failed to get current timeline: %w", err)
 		}
 
-		// Auto-detect GitHub repository and branch
+		// Auto-detect GitHub repository from portal configuration
 		var owner, repo, branch string
 		branch = currentTimeline // Default branch to current timeline name
 
-		// Check if GitHub repository is specified in arguments
-		if len(args) > 0 && strings.HasPrefix(args[0], "github:") {
-			// Parse GitHub repository from argument
-			repoPath := strings.TrimPrefix(args[0], "github:")
-			parts := strings.Split(repoPath, "/")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid GitHub repository format. Use: github:owner/repo")
-			}
-			owner, repo = parts[0], parts[1]
+		// Get GitHub repository from configuration
+		owner, repo, err = refsManager.GetGitHubRepository()
+		if err != nil {
+			return fmt.Errorf("no GitHub repository configured. Use 'ivaldi portal add owner/repo' or download from GitHub first")
+		}
 
-			// Check if branch is specified
-			if len(args) > 1 {
-				branch = args[1]
-			}
-		} else {
-			// Try to auto-detect GitHub repository from configuration
-			var err error
-			owner, repo, err = refsManager.GetGitHubRepository()
-			if err != nil {
-				return fmt.Errorf("no GitHub repository configured and none specified. Use 'ivaldi download' from GitHub first or specify 'github:owner/repo'")
-			}
-
-			// If first argument is not a GitHub URL, treat it as branch name
-			if len(args) > 0 {
-				branch = args[0]
-			}
+		// If argument provided, treat it as branch name
+		if len(args) > 0 {
+			branch = args[0]
 		}
 
 		// Get current timeline's latest commit
@@ -485,7 +466,7 @@ Examples:
 			fmt.Printf("%s Consider creating a backup branch first:\n",
 				colors.Bold("💡 Tip:"))
 			fmt.Printf("  ivaldi timeline create backup-before-force-push\n")
-			fmt.Printf("  ivaldi upload github:%s/%s backup-before-force-push\n\n", owner, repo)
+			fmt.Printf("  ivaldi upload backup-before-force-push\n\n")
 
 			// Require explicit confirmation
 			fmt.Print("Type 'force push' to confirm: ")
@@ -532,19 +513,22 @@ var downloadCmd = &cobra.Command{
 		url := args[0]
 		gitlabFlag, _ := cmd.Flags().GetBool("gitlab")
 		customURL, _ := cmd.Flags().GetString("url")
+		depth, _ := cmd.Flags().GetInt("depth")
+		skipHistory, _ := cmd.Flags().GetBool("skip-history")
+		includeTags, _ := cmd.Flags().GetBool("include-tags")
 
 		// Check --gitlab flag for explicit GitLab handling
 		if gitlabFlag {
-			return handleGitLabDownload(url, args, customURL)
+			return handleGitLabDownload(url, args, customURL, depth, skipHistory, includeTags)
 		}
 
 		// Auto-detect platform from URL
 		if isGitHubURL(url) {
-			return handleGitHubDownload(url, args)
+			return handleGitHubDownload(url, args, depth, skipHistory, includeTags)
 		}
 
 		if isGitLabURL(url) {
-			return handleGitLabDownload(url, args, customURL)
+			return handleGitLabDownload(url, args, customURL, depth, skipHistory, includeTags)
 		}
 
 		// Check if it's a generic Git URL (http/https)
@@ -1074,6 +1058,9 @@ func init() {
 	downloadCmd.Flags().BoolVar(&recurseSubmodules, "recurse-submodules", true, "Automatically clone and convert Git submodules (default: true)")
 	downloadCmd.Flags().Bool("gitlab", false, "Download from GitLab instead of GitHub")
 	downloadCmd.Flags().String("url", "", "Custom GitLab instance URL (e.g., gitlab.javanstormbreaker.com)")
+	downloadCmd.Flags().Int("depth", 0, "Limit commit history depth (0 for full history)")
+	downloadCmd.Flags().Bool("skip-history", false, "Skip commit history migration, download only latest snapshot")
+	downloadCmd.Flags().Bool("include-tags", false, "Include tags and releases in the import")
 	uploadCmd.Flags().BoolVar(&forceUpload, "force", false, "Force push to remote (overwrites remote history - use with caution!)")
 }
 

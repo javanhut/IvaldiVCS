@@ -58,7 +58,7 @@ func NewRepoSyncerWithURL(ivaldiDir, workDir string, owner, repo, baseURL string
 }
 
 // CloneRepository clones a GitLab repository without using Git
-func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string) error {
+func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, depth int, skipHistory bool, includeTags bool) error {
 	fmt.Printf("Cloning %s/%s from GitLab...\n", owner, repo)
 
 	// Get project info
@@ -79,25 +79,355 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string) e
 		return fmt.Errorf("failed to get branch info: %w", err)
 	}
 
+	// Check if we should skip history migration (backward compatibility)
+	if skipHistory {
+		fmt.Println("Skipping history migration, downloading latest snapshot only...")
+		return rs.cloneSnapshot(ctx, owner, repo, branch.Commit.ID, project.DefaultBranch)
+	}
+
+	// Fetch commit history
+	fmt.Printf("Fetching commit history (depth: ")
+	if depth == 0 {
+		fmt.Printf("full history")
+	} else {
+		fmt.Printf("%d commits", depth)
+	}
+	fmt.Println(")...")
+
+	commits, err := rs.client.ListCommits(ctx, owner, repo, project.DefaultBranch, depth)
+	if err != nil {
+		return fmt.Errorf("failed to fetch commit history: %w", err)
+	}
+
+	if len(commits) == 0 {
+		return fmt.Errorf("no commits found in repository")
+	}
+
+	fmt.Printf("Found %d commits to import\n", len(commits))
+
+	// Import commits in chronological order (reverse the list)
+	err = rs.importCommitHistory(ctx, owner, repo, commits)
+	if err != nil {
+		return fmt.Errorf("failed to import commit history: %w", err)
+	}
+
+	// Import tags if requested
+	if includeTags {
+		fmt.Println("Importing tags and releases...")
+		err = rs.importTags(ctx, owner, repo)
+		if err != nil {
+			fmt.Printf("Warning: failed to import tags: %v\n", err)
+		}
+	}
+
+	fmt.Printf("Successfully cloned %s/%s with %d commits\n", owner, repo, len(commits))
+	return nil
+}
+
+// cloneSnapshot downloads only the latest snapshot without history (backward compatibility)
+func (rs *RepoSyncer) cloneSnapshot(ctx context.Context, owner, repo, commitID, branchName string) error {
 	// Get the tree for the latest commit
-	tree, err := rs.client.GetTree(ctx, owner, repo, branch.Commit.ID, true)
+	tree, err := rs.client.GetTree(ctx, owner, repo, commitID, true)
 	if err != nil {
 		return fmt.Errorf("failed to get repository tree: %w", err)
 	}
 
 	// Download files concurrently
-	err = rs.downloadFiles(ctx, owner, repo, tree, branch.Commit.ID)
+	err = rs.downloadFiles(ctx, owner, repo, tree, commitID)
 	if err != nil {
 		return fmt.Errorf("failed to download files: %w", err)
 	}
 
-	// Create initial commit in Ivaldi
+	// Create single initial commit in Ivaldi
 	err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitLab: %s/%s", owner, repo))
 	if err != nil {
 		return fmt.Errorf("failed to create Ivaldi commit: %w", err)
 	}
 
-	fmt.Printf("Successfully cloned %s/%s\n", owner, repo)
+	fmt.Printf("Successfully cloned snapshot from %s/%s\n", owner, repo)
+	return nil
+}
+
+// gitlabCommitDownloadResult holds the downloaded state for a commit
+type gitlabCommitDownloadResult struct {
+	commit         *Commit
+	tree           []TreeEntry
+	workspaceFiles []wsindex.FileMetadata
+	err            error
+}
+
+// importCommitHistory imports Git commits as Ivaldi commits in chronological order
+func (rs *RepoSyncer) importCommitHistory(ctx context.Context, owner, repo string, commits []*Commit) error {
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	// Initialize MMR
+	mmr, err := history.NewPersistentMMR(rs.casStore, rs.ivaldiDir)
+	if err != nil {
+		mmr = &history.PersistentMMR{MMR: history.NewMMR()}
+	}
+	defer mmr.Close()
+
+	commitBuilder := commit.NewCommitBuilder(rs.casStore, mmr.MMR)
+
+	totalCommits := len(commits)
+	fmt.Printf("\nImporting %d commits with full history...\n", totalCommits)
+
+	// Process commits in batches for parallel downloading
+	batchSize := 3
+	processedCount := 0
+
+	// Reverse commits to process in chronological order (oldest first)
+	for batchStart := len(commits) - 1; batchStart >= 0; batchStart -= batchSize {
+		batchEnd := batchStart - batchSize + 1
+		if batchEnd < 0 {
+			batchEnd = 0
+		}
+
+		// Phase 1: Download commits in parallel
+		batchCommits := commits[batchEnd : batchStart+1]
+		downloadResults := make([]gitlabCommitDownloadResult, len(batchCommits))
+
+		fmt.Printf("\rDownloading commits: %d/%d", processedCount, totalCommits)
+
+		var downloadWg sync.WaitGroup
+		semaphore := make(chan struct{}, 3) // Limit concurrent downloads
+
+		for idx, gitCommit := range batchCommits {
+			downloadWg.Add(1)
+			go func(idx int, gc *Commit) {
+				defer downloadWg.Done()
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				result := gitlabCommitDownloadResult{commit: gc}
+
+				// Download tree
+				tree, err := rs.client.GetTree(ctx, owner, repo, gc.ID, true)
+				if err != nil {
+					result.err = fmt.Errorf("failed to get tree: %w", err)
+					downloadResults[idx] = result
+					return
+				}
+				result.tree = tree
+
+				// Download files to main workspace (synchronized per file, not per commit)
+				err = rs.downloadFilesQuiet(ctx, owner, repo, tree, gc.ID)
+				if err != nil {
+					result.err = fmt.Errorf("failed to download files: %w", err)
+					downloadResults[idx] = result
+					return
+				}
+
+				result.workspaceFiles = nil // Will scan workspace sequentially
+				downloadResults[idx] = result
+			}(idx, gitCommit)
+		}
+
+		downloadWg.Wait()
+
+		// Phase 2: Create commits sequentially (preserves parent relationships)
+		for _, result := range downloadResults {
+			if result.err != nil {
+				return fmt.Errorf("failed to process commit %s: %w", result.commit.ID, result.err)
+			}
+
+			gitCommit := result.commit
+			processedCount++
+
+			// Show progress
+			fmt.Printf("\rCreating commits: %d/%d", processedCount, totalCommits)
+
+			// Scan workspace sequentially to avoid race conditions
+			materializer := workspace.NewMaterializer(rs.casStore, rs.ivaldiDir, rs.workDir)
+			wsIndex, err := materializer.ScanWorkspace()
+			if err != nil {
+				return fmt.Errorf("failed to scan workspace: %w", err)
+			}
+
+			wsLoader := wsindex.NewLoader(rs.casStore)
+			workspaceFiles, err := wsLoader.ListAll(wsIndex)
+			if err != nil {
+				return fmt.Errorf("failed to list workspace files: %w", err)
+			}
+
+			// Determine parent commits
+			var parents []cas.Hash
+			for _, parentID := range gitCommit.ParentIDs {
+				ivaldiParentHash, err := refsManager.GetGitMapping(parentID)
+				if err == nil {
+					parents = append(parents, ivaldiParentHash)
+				}
+			}
+
+			// Create author/committer strings
+			author := fmt.Sprintf("%s <%s>", gitCommit.AuthorName, gitCommit.AuthorEmail)
+			committer := fmt.Sprintf("%s <%s>", gitCommit.CommitterName, gitCommit.CommitterEmail)
+
+			// Create Ivaldi commit with preserved metadata
+			commitObj, err := commitBuilder.CreateCommitWithTime(
+				workspaceFiles,
+				parents,
+				author,
+				committer,
+				gitCommit.Message,
+				gitCommit.AuthoredDate,
+				gitCommit.CommittedDate,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create Ivaldi commit: %w", err)
+			}
+
+			// Get commit hash
+			commitHash := commitBuilder.GetCommitHash(commitObj)
+
+			// Store Git SHA1 → Ivaldi BLAKE3 mapping
+			err = refsManager.PutGitMapping(gitCommit.ID, commitHash)
+			if err != nil {
+				fmt.Printf("\nWarning: failed to store Git mapping for %s: %v\n", gitCommit.ID, err)
+			}
+
+			// Update timeline with this commit
+			var hashArray [32]byte
+			copy(hashArray[:], commitHash[:])
+
+			currentTimeline, err := refsManager.GetCurrentTimeline()
+			if err != nil {
+				currentTimeline = "main"
+			}
+
+			err = refsManager.UpdateTimeline(
+				currentTimeline,
+				refs.LocalTimeline,
+				hashArray,
+				[32]byte{},
+				gitCommit.ID,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to update timeline: %w", err)
+			}
+		}
+	}
+
+	fmt.Printf("\rSuccessfully imported %d commits\n\n", totalCommits)
+	return nil
+}
+
+// downloadFilesQuiet downloads files without progress output
+func (rs *RepoSyncer) downloadFilesQuiet(ctx context.Context, owner, repo string, tree []TreeEntry, ref string) error {
+	var filesToDownload []TreeEntry
+	for _, entry := range tree {
+		if entry.Type == "blob" {
+			localPath := filepath.Join(rs.workDir, entry.Path)
+			if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+				continue
+			}
+			filesToDownload = append(filesToDownload, entry)
+		}
+	}
+
+	if len(filesToDownload) == 0 {
+		return nil
+	}
+
+	workers := 8
+	if len(filesToDownload) > 100 {
+		workers = 16
+	}
+	if len(filesToDownload) > 500 {
+		workers = 32
+	}
+
+	jobs := make(chan TreeEntry, len(filesToDownload))
+	errors := make(chan error, len(filesToDownload))
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for entry := range jobs {
+				if err := rs.downloadFile(ctx, owner, repo, entry, ref); err != nil {
+					errors <- fmt.Errorf("failed to download %s: %w", entry.Path, err)
+				}
+			}
+		}()
+	}
+
+	for _, entry := range filesToDownload {
+		jobs <- entry
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(errors)
+
+	var downloadErrors []error
+	for err := range errors {
+		downloadErrors = append(downloadErrors, err)
+	}
+
+	if len(downloadErrors) > 0 {
+		return fmt.Errorf("failed to download %d files", len(downloadErrors))
+	}
+
+	return nil
+}
+
+// importTags imports tags and releases from GitLab as Ivaldi references
+func (rs *RepoSyncer) importTags(ctx context.Context, owner, repo string) error {
+	tags, err := rs.client.ListTags(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to list tags: %w", err)
+	}
+
+	if len(tags) == 0 {
+		fmt.Println("No tags found")
+		return nil
+	}
+
+	fmt.Printf("Found %d tags\n", len(tags))
+
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	importedCount := 0
+	for _, tag := range tags {
+		// Get the Ivaldi commit hash for this Git commit
+		ivaldiHash, err := refsManager.GetGitMapping(tag.Commit.ID)
+		if err != nil {
+			fmt.Printf("Warning: tag '%s' points to commit %s which was not imported, skipping\n", tag.Name, tag.Commit.ID[:7])
+			continue
+		}
+
+		// Create tag reference in Ivaldi
+		var hashArray [32]byte
+		copy(hashArray[:], ivaldiHash[:])
+
+		err = refsManager.CreateTimeline(
+			"tags/"+tag.Name,
+			refs.LocalTimeline,
+			hashArray,
+			[32]byte{},
+			tag.Commit.ID,
+			fmt.Sprintf("Tag: %s", tag.Name),
+		)
+		if err != nil {
+			fmt.Printf("Warning: failed to create tag '%s': %v\n", tag.Name, err)
+			continue
+		}
+
+		importedCount++
+		fmt.Printf("Imported tag: %s\n", tag.Name)
+	}
+
+	fmt.Printf("Successfully imported %d/%d tags\n", importedCount, len(tags))
 	return nil
 }
 

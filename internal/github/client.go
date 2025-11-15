@@ -71,6 +71,27 @@ type Commit struct {
 		SHA string `json:"sha"`
 	} `json:"tree"`
 	Message string `json:"message"`
+	Author  struct {
+		Name  string    `json:"name"`
+		Email string    `json:"email"`
+		Date  time.Time `json:"date"`
+	} `json:"author"`
+	Committer struct {
+		Name  string    `json:"name"`
+		Email string    `json:"email"`
+		Date  time.Time `json:"date"`
+	} `json:"committer"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+}
+
+// Tag represents a GitHub tag/release
+type Tag struct {
+	Name       string `json:"name"`
+	CommitSHA  string `json:"commit"`
+	ZipballURL string `json:"zipball_url"`
+	TarballURL string `json:"tarball_url"`
 }
 
 // FileContent represents a file's content from GitHub
@@ -114,8 +135,8 @@ type BlobResponse struct {
 
 // CreateTreeRequest represents a request to create a tree
 type CreateTreeRequest struct {
-	Tree    []GitTreeEntry `json:"tree"`
-	BaseTree string        `json:"base_tree,omitempty"`
+	Tree     []GitTreeEntry `json:"tree"`
+	BaseTree string         `json:"base_tree,omitempty"`
 }
 
 // GitTreeEntry represents an entry when creating a tree
@@ -135,10 +156,10 @@ type TreeResponse struct {
 
 // CreateCommitRequest represents a request to create a commit
 type CreateCommitRequest struct {
-	Message string   `json:"message"`
-	Tree    string   `json:"tree"`
-	Parents []string `json:"parents"`
-	Author  *GitUser `json:"author,omitempty"`
+	Message   string   `json:"message"`
+	Tree      string   `json:"tree"`
+	Parents   []string `json:"parents"`
+	Author    *GitUser `json:"author,omitempty"`
 	Committer *GitUser `json:"committer,omitempty"`
 }
 
@@ -711,4 +732,120 @@ func (c *Client) UpdateRef(ctx context.Context, owner, repo, ref string, req Upd
 	defer resp.Body.Close()
 
 	return nil
+}
+
+// ListCommits fetches commits from a repository branch with optional depth limit
+func (c *Client) ListCommits(ctx context.Context, owner, repo, branch string, depth int) ([]*Commit, error) {
+	commits := make([]*Commit, 0)
+	page := 1
+	perPage := 100
+
+	for {
+		path := fmt.Sprintf("/repos/%s/%s/commits?sha=%s&per_page=%d&page=%d", owner, repo, branch, perPage, page)
+		resp, err := c.doRequest(ctx, "GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		var pageCommits []struct {
+			SHA    string `json:"sha"`
+			Commit struct {
+				Author struct {
+					Name  string    `json:"name"`
+					Email string    `json:"email"`
+					Date  time.Time `json:"date"`
+				} `json:"author"`
+				Committer struct {
+					Name  string    `json:"name"`
+					Email string    `json:"email"`
+					Date  time.Time `json:"date"`
+				} `json:"committer"`
+				Message string `json:"message"`
+				Tree    struct {
+					SHA string `json:"sha"`
+				} `json:"tree"`
+			} `json:"commit"`
+			Parents []struct {
+				SHA string `json:"sha"`
+			} `json:"parents"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&pageCommits); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode commits: %w", err)
+		}
+		resp.Body.Close()
+
+		// Log progress for large repositories
+		if page > 1 {
+			fmt.Printf("\rFetching commits: %d commits retrieved (page %d)...", len(commits), page)
+		}
+
+		for _, pc := range pageCommits {
+			commit := &Commit{
+				SHA:     pc.SHA,
+				TreeSHA: pc.Commit.Tree.SHA,
+				Message: pc.Commit.Message,
+			}
+			commit.Tree.SHA = pc.Commit.Tree.SHA
+			commit.Author = pc.Commit.Author
+			commit.Committer = pc.Commit.Committer
+			commit.Parents = pc.Parents
+
+			commits = append(commits, commit)
+
+			if depth > 0 && len(commits) >= depth {
+				if page > 1 {
+					fmt.Println() // New line after progress
+				}
+				return commits, nil
+			}
+		}
+
+		// If we got fewer commits than requested, we've reached the end
+		if len(pageCommits) < perPage {
+			if page > 1 {
+				fmt.Println() // New line after progress
+			}
+			break
+		}
+
+		page++
+	}
+
+	return commits, nil
+}
+
+// ListTags fetches all tags from a repository
+func (c *Client) ListTags(ctx context.Context, owner, repo string) ([]*Tag, error) {
+	tags := make([]*Tag, 0)
+	page := 1
+	perPage := 100
+
+	for {
+		path := fmt.Sprintf("/repos/%s/%s/tags?per_page=%d&page=%d", owner, repo, perPage, page)
+		resp, err := c.doRequest(ctx, "GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		var pageTags []*Tag
+		if err := json.NewDecoder(resp.Body).Decode(&pageTags); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode tags: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, tag := range pageTags {
+			tags = append(tags, tag)
+		}
+
+		if len(pageTags) < perPage {
+			break
+		}
+
+		page++
+	}
+
+	return tags, nil
 }

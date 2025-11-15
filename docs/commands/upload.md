@@ -10,12 +10,16 @@ Push commits to GitHub.
 ## Synopsis
 
 ```bash
-ivaldi upload
+ivaldi upload [branch] [flags]
 ```
 
 ## Description
 
-Upload the current timeline to GitHub, creating or updating the corresponding branch.
+Upload the current timeline to GitHub, creating or updating the corresponding branch. Ivaldi automatically converts your commits to Git format and pushes them with visual progress tracking.
+
+## Flags
+
+- `--force` - Force push to remote (overwrites remote history - use with caution!)
 
 ## Prerequisites
 
@@ -30,6 +34,22 @@ Upload the current timeline to GitHub, creating or updating the corresponding br
 ivaldi upload
 ```
 
+Uploads the current timeline to GitHub with automatic branch creation and progress tracking.
+
+### Upload to Specific Branch
+
+```bash
+ivaldi upload main
+```
+
+### Force Push (Overwrite Remote History)
+
+```bash
+ivaldi upload --force
+```
+
+**Warning:** Force push requires confirmation and will overwrite remote history. Use with extreme caution!
+
 ### Complete Workflow
 
 ```bash
@@ -41,9 +61,27 @@ ivaldi upload
 
 ## What Happens
 
-1. Converts Ivaldi seals to Git commits
-2. Pushes to GitHub repository
-3. Creates/updates branch matching timeline name
+1. **Detects changes** - Compares local commits with remote state
+2. **Optimizes transfer** - Uses delta uploads when possible (only changed files)
+3. **Uploads blobs** - Parallel upload of file content to GitHub (with progress bar)
+4. **Creates tree** - Constructs Git tree structure
+5. **Creates commit** - Generates Git commit with preserved metadata
+6. **Updates reference** - Creates or updates the branch on GitHub
+
+## Progress Tracking
+
+The upload command provides real-time progress bars for:
+
+- **File uploads** - Visual progress for uploading blobs to GitHub
+- **Parallel processing** - Shows concurrent upload status (up to 32 workers)
+- **Completion status** - Clear indication of successful upload
+
+## Performance Features
+
+- **Delta uploads** - Only uploads changed files when updating existing branches
+- **Parallel uploads** - Up to 32 concurrent file uploads
+- **Smart detection** - Automatically detects if files have changed
+- **Rate limit handling** - Respects GitHub API rate limits
 
 ## Authentication
 

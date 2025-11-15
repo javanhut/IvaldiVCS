@@ -80,7 +80,18 @@ func (cb *CommitBuilder) CreateCommit(
 	parents []cas.Hash,
 	author, committer, message string,
 ) (*CommitObject, error) {
-	
+	now := time.Now()
+	return cb.CreateCommitWithTime(workspaceFiles, parents, author, committer, message, now, now)
+}
+
+// CreateCommitWithTime creates a new commit from workspace files with specified timestamps.
+func (cb *CommitBuilder) CreateCommitWithTime(
+	workspaceFiles []wsindex.FileMetadata,
+	parents []cas.Hash,
+	author, committer, message string,
+	authorTime, commitTime time.Time,
+) (*CommitObject, error) {
+
 	// Step 1: Build tree structure from workspace files
 	treeHash, err := cb.buildTreeFromWorkspace(workspaceFiles)
 	if err != nil {
@@ -88,14 +99,13 @@ func (cb *CommitBuilder) CreateCommit(
 	}
 
 	// Step 2: Create commit object
-	now := time.Now()
 	commit := &CommitObject{
 		TreeHash:   treeHash,
 		Parents:    parents,
 		Author:     author,
 		Committer:  committer,
-		AuthorTime: now,
-		CommitTime: now,
+		AuthorTime: authorTime,
+		CommitTime: commitTime,
 		Message:    message,
 	}
 
@@ -130,7 +140,7 @@ func (cb *CommitBuilder) CreateCommit(
 	// Step 4: Store commit object in CAS
 	commitData := cb.encodeCommit(commit)
 	commitHash := cas.SumB3(commitData)
-	
+
 	err = cb.CAS.Put(commitHash, commitData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store commit: %w", err)

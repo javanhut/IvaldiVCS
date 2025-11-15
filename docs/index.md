@@ -74,6 +74,7 @@ ivaldi upload
 - [Team Collaboration](guides/collaboration.md)
 - [GitHub Integration](guides/github-integration.md)
 - [Git Migration with Submodules](guides/git-migration-with-submodules.md)
+- [Git History Migration](history-migration.md)
 
 ### Reference
 - [Comparison with Git](comparison.md)

@@ -64,10 +64,34 @@ type Branch struct {
 
 // Commit represents a GitLab commit
 type Commit struct {
-	ID        string `json:"id"`
+	ID             string    `json:"id"`
+	ShortID        string    `json:"short_id"`
+	Message        string    `json:"message"`
+	Title          string    `json:"title"`
+	AuthorName     string    `json:"author_name"`
+	AuthorEmail    string    `json:"author_email"`
+	AuthoredDate   time.Time `json:"authored_date"`
+	CommitterName  string    `json:"committer_name"`
+	CommitterEmail string    `json:"committer_email"`
+	CommittedDate  time.Time `json:"committed_date"`
+	CreatedAt      time.Time `json:"created_at"`
+	ParentIDs      []string  `json:"parent_ids"`
+}
+
+// Tag represents a GitLab tag
+type Tag struct {
+	Name      string `json:"name"`
 	Message   string `json:"message"`
-	Title     string `json:"title"`
-	CreatedAt string `json:"created_at"`
+	Target    string `json:"target"`
+	Commit    Commit `json:"commit"`
+	Release   *Release `json:"release,omitempty"`
+	Protected bool   `json:"protected"`
+}
+
+// Release represents a GitLab release
+type Release struct {
+	TagName     string `json:"tag_name"`
+	Description string `json:"description"`
 }
 
 // TreeEntry represents an entry in a Git tree
@@ -640,4 +664,94 @@ func (c *Client) UpdateRef(ctx context.Context, owner, repo, branch, sha string)
 	// In GitLab, updating a ref is done through protected branches or by creating commits
 	// This is typically handled through the commit creation process
 	return fmt.Errorf("GitLab does not support direct ref updates; use CreateCommit instead")
+}
+
+// ListCommits fetches commits from a repository branch with optional depth limit
+func (c *Client) ListCommits(ctx context.Context, owner, repo, branch string, depth int) ([]*Commit, error) {
+	projectPath := fmt.Sprintf("%s/%s", owner, repo)
+	encodedPath := strings.ReplaceAll(projectPath, "/", "%2F")
+
+	commits := make([]*Commit, 0)
+	page := 1
+	perPage := 100
+
+	for {
+		endpoint := fmt.Sprintf("/projects/%s/repository/commits?ref_name=%s&per_page=%d&page=%d", encodedPath, branch, perPage, page)
+		resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("GitLab API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var pageCommits []*Commit
+		if err := json.NewDecoder(resp.Body).Decode(&pageCommits); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode commits: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, commit := range pageCommits {
+			commits = append(commits, commit)
+
+			if depth > 0 && len(commits) >= depth {
+				return commits, nil
+			}
+		}
+
+		if len(pageCommits) < perPage {
+			break
+		}
+
+		page++
+	}
+
+	return commits, nil
+}
+
+// ListTags fetches all tags from a repository
+func (c *Client) ListTags(ctx context.Context, owner, repo string) ([]*Tag, error) {
+	projectPath := fmt.Sprintf("%s/%s", owner, repo)
+	encodedPath := strings.ReplaceAll(projectPath, "/", "%2F")
+
+	tags := make([]*Tag, 0)
+	page := 1
+	perPage := 100
+
+	for {
+		endpoint := fmt.Sprintf("/projects/%s/repository/tags?per_page=%d&page=%d", encodedPath, perPage, page)
+		resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("GitLab API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var pageTags []*Tag
+		if err := json.NewDecoder(resp.Body).Decode(&pageTags); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode tags: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, tag := range pageTags {
+			tags = append(tags, tag)
+		}
+
+		if len(pageTags) < perPage {
+			break
+		}
+
+		page++
+	}
+
+	return tags, nil
 }

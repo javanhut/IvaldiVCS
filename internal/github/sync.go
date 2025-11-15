@@ -13,7 +13,9 @@ import (
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
+	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/progress"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
@@ -50,7 +52,7 @@ func NewRepoSyncer(ivaldiDir, workDir string) (*RepoSyncer, error) {
 }
 
 // CloneRepository clones a GitHub repository without using Git
-func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string) error {
+func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, depth int, skipHistory bool, includeTags bool) error {
 	fmt.Printf("Cloning %s/%s from GitHub...\n", owner, repo)
 
 	// Check rate limits
@@ -74,25 +76,418 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string) e
 		return fmt.Errorf("failed to get branch info: %w", err)
 	}
 
+	// Check if we should skip history migration (backward compatibility)
+	if skipHistory {
+		fmt.Println("Skipping history migration, downloading latest snapshot only...")
+		return rs.cloneSnapshot(ctx, owner, repo, branch.Commit.SHA, repoInfo.DefaultBranch)
+	}
+
+	// Fetch commit history
+	fmt.Printf("\nFetching commit history (depth: ")
+	if depth == 0 {
+		fmt.Printf("full history")
+	} else {
+		fmt.Printf("%d commits", depth)
+	}
+	fmt.Println(")...")
+
+	commits, err := rs.client.ListCommits(ctx, owner, repo, repoInfo.DefaultBranch, depth)
+	if err != nil {
+		return fmt.Errorf("failed to fetch commit history: %w", err)
+	}
+
+	if len(commits) == 0 {
+		return fmt.Errorf("no commits found in repository")
+	}
+
+	if depth == 0 {
+		fmt.Printf("Retrieved complete history: %d commits\n\n", len(commits))
+	} else {
+		fmt.Printf("Found %d commits to import (limited by depth=%d)\n\n", len(commits), depth)
+	}
+
+	// Import commits in chronological order (reverse the list)
+	err = rs.importCommitHistory(ctx, owner, repo, commits)
+	if err != nil {
+		return fmt.Errorf("failed to import commit history: %w", err)
+	}
+
+	// Import tags if requested
+	if includeTags {
+		fmt.Println("Importing tags and releases...")
+		err = rs.importTags(ctx, owner, repo)
+		if err != nil {
+			fmt.Printf("Warning: failed to import tags: %v\n", err)
+		}
+	}
+
+	fmt.Printf("Successfully cloned %s/%s with %d commits\n", owner, repo, len(commits))
+	return nil
+}
+
+// cloneSnapshot downloads only the latest snapshot without history (backward compatibility)
+func (rs *RepoSyncer) cloneSnapshot(ctx context.Context, owner, repo, commitSHA, branchName string) error {
 	// Get the tree for the latest commit
-	tree, err := rs.client.GetTree(ctx, owner, repo, branch.Commit.SHA, true)
+	tree, err := rs.client.GetTree(ctx, owner, repo, commitSHA, true)
 	if err != nil {
 		return fmt.Errorf("failed to get repository tree: %w", err)
 	}
 
 	// Download files concurrently
-	err = rs.downloadFiles(ctx, owner, repo, tree, branch.Commit.SHA)
+	err = rs.downloadFiles(ctx, owner, repo, tree, commitSHA)
 	if err != nil {
 		return fmt.Errorf("failed to download files: %w", err)
 	}
 
-	// Create initial commit in Ivaldi
+	// Create single initial commit in Ivaldi
 	err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo))
 	if err != nil {
 		return fmt.Errorf("failed to create Ivaldi commit: %w", err)
 	}
 
-	fmt.Printf("Successfully cloned %s/%s\n", owner, repo)
+	fmt.Printf("Successfully cloned snapshot from %s/%s\n", owner, repo)
+	return nil
+}
+
+// commitDownloadResult holds the downloaded state for a commit
+type commitDownloadResult struct {
+	commit         *Commit
+	tree           *Tree
+	workspaceFiles []wsindex.FileMetadata
+	err            error
+}
+
+// importCommitHistory imports Git commits as Ivaldi commits in chronological order
+func (rs *RepoSyncer) importCommitHistory(ctx context.Context, owner, repo string, commits []*Commit) error {
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	// Initialize MMR
+	mmr, err := history.NewPersistentMMR(rs.casStore, rs.ivaldiDir)
+	if err != nil {
+		mmr = &history.PersistentMMR{MMR: history.NewMMR()}
+	}
+	defer mmr.Close()
+
+	commitBuilder := commit.NewCommitBuilder(rs.casStore, mmr.MMR)
+
+	totalCommits := len(commits)
+	fmt.Printf("\nImporting %d commits with full history...\n", totalCommits)
+
+	// OPTIMIZATION 1: Pre-fetch all unique trees in parallel with caching
+	fmt.Printf("Fetching tree data for %d commits...\n", totalCommits)
+	treeCache := make(map[string]*Tree)
+	var treeMutex sync.Mutex
+	var treeWg sync.WaitGroup
+	treeSemaphore := make(chan struct{}, 20)
+
+	// Collect unique tree SHAs
+	uniqueTrees := make(map[string]bool)
+	for _, commit := range commits {
+		uniqueTrees[commit.TreeSHA] = true
+	}
+
+	treeProgress := progress.NewDownloadBar(len(uniqueTrees), "Fetching trees")
+
+	for treeSHA := range uniqueTrees {
+		treeWg.Add(1)
+		go func(sha string) {
+			defer treeWg.Done()
+			treeSemaphore <- struct{}{}
+			defer func() { <-treeSemaphore }()
+
+			tree, err := rs.client.GetTree(ctx, owner, repo, sha, true)
+			if err == nil {
+				treeMutex.Lock()
+				treeCache[sha] = tree
+				treeMutex.Unlock()
+			}
+			treeProgress.Increment()
+		}(treeSHA)
+	}
+	treeWg.Wait()
+	treeProgress.Finish()
+
+	fmt.Printf("Fetched %d unique trees\n", len(treeCache))
+
+	// OPTIMIZATION 2: Download all files for all commits in parallel upfront
+	fmt.Printf("Downloading files...\n")
+	allFiles := make(map[string]bool) // Track unique files
+	for _, tree := range treeCache {
+		for _, entry := range tree.Tree {
+			if entry.Type == "blob" {
+				allFiles[entry.Path] = true
+			}
+		}
+	}
+
+	// Download all unique files in parallel
+	var filesToDownload []TreeEntry
+	for _, tree := range treeCache {
+		for _, entry := range tree.Tree {
+			if entry.Type == "blob" {
+				localPath := filepath.Join(rs.workDir, entry.Path)
+				if _, err := os.Stat(localPath); os.IsNotExist(err) {
+					filesToDownload = append(filesToDownload, entry)
+				}
+			}
+		}
+	}
+
+	if len(filesToDownload) > 0 {
+		fileProgress := progress.NewDownloadBar(len(filesToDownload), "Downloading files")
+		var fileWg sync.WaitGroup
+		fileSemaphore := make(chan struct{}, 20) // Increased from 3 to 20
+
+		for _, entry := range filesToDownload {
+			fileWg.Add(1)
+			go func(e TreeEntry) {
+				defer fileWg.Done()
+				fileSemaphore <- struct{}{}
+				defer func() { <-fileSemaphore }()
+
+				// Use first commit's SHA as ref (doesn't matter which)
+				for _, commit := range commits {
+					rs.downloadFile(ctx, owner, repo, e, commit.SHA)
+					break
+				}
+				fileProgress.Increment()
+			}(entry)
+		}
+		fileWg.Wait()
+		fileProgress.Finish()
+	}
+
+	// Create progress bar for commit processing
+	progressBar := progress.NewDownloadBar(totalCommits, "Creating commits")
+	defer progressBar.Finish()
+
+	// OPTIMIZATION 3: Process commits in chronological order without batching
+	// Reverse to oldest first
+	for i := len(commits) - 1; i >= 0; i-- {
+		gitCommit := commits[i]
+
+		// Update progress bar
+		progressBar.Increment()
+
+		// Get tree from cache
+		tree, exists := treeCache[gitCommit.TreeSHA]
+		if !exists {
+			progressBar.Finish()
+			return fmt.Errorf("tree %s not found in cache", gitCommit.TreeSHA)
+		}
+
+		// OPTIMIZATION 4: Build file list from tree without filesystem scanning
+		workspaceFiles := make([]wsindex.FileMetadata, 0, len(tree.Tree))
+		for _, entry := range tree.Tree {
+			if entry.Type == "blob" {
+				filePath := filepath.Join(rs.workDir, entry.Path)
+				content, err := os.ReadFile(filePath)
+				if err != nil {
+					// File might not exist yet, skip it
+					continue
+				}
+
+				// Store content in CAS
+				contentHash := cas.SumB3(content)
+				rs.casStore.Put(contentHash, content)
+
+				// Get file info
+				fileInfo, err := os.Stat(filePath)
+				if err != nil {
+					continue
+				}
+
+				workspaceFiles = append(workspaceFiles, wsindex.FileMetadata{
+					Path:     entry.Path,
+					FileRef:  filechunk.NodeRef{Hash: contentHash},
+					ModTime:  fileInfo.ModTime(),
+					Mode:     uint32(fileInfo.Mode()),
+					Size:     int64(len(content)),
+					Checksum: contentHash,
+				})
+			}
+		}
+
+		// Determine parent commits
+		var parents []cas.Hash
+		for _, parentInfo := range gitCommit.Parents {
+			ivaldiParentHash, err := refsManager.GetGitMapping(parentInfo.SHA)
+			if err == nil {
+				parents = append(parents, ivaldiParentHash)
+			}
+		}
+
+		// Create author/committer strings
+		author := fmt.Sprintf("%s <%s>", gitCommit.Author.Name, gitCommit.Author.Email)
+		committer := fmt.Sprintf("%s <%s>", gitCommit.Committer.Name, gitCommit.Committer.Email)
+
+		// Create Ivaldi commit with preserved metadata
+		commitObj, err := commitBuilder.CreateCommitWithTime(
+			workspaceFiles,
+			parents,
+			author,
+			committer,
+			gitCommit.Message,
+			gitCommit.Author.Date,
+			gitCommit.Committer.Date,
+		)
+		if err != nil {
+			progressBar.Finish()
+			return fmt.Errorf("failed to create Ivaldi commit: %w", err)
+		}
+
+		// Get commit hash
+		commitHash := commitBuilder.GetCommitHash(commitObj)
+
+		// Store Git SHA1 → Ivaldi BLAKE3 mapping
+		err = refsManager.PutGitMapping(gitCommit.SHA, commitHash)
+		if err != nil {
+			fmt.Printf("\nWarning: failed to store Git mapping for %s: %v\n", gitCommit.SHA, err)
+		}
+
+		// Update timeline with this commit
+		var hashArray [32]byte
+		copy(hashArray[:], commitHash[:])
+
+		currentTimeline, err := refsManager.GetCurrentTimeline()
+		if err != nil {
+			currentTimeline = "main"
+		}
+
+		err = refsManager.UpdateTimeline(
+			currentTimeline,
+			refs.LocalTimeline,
+			hashArray,
+			[32]byte{},
+			gitCommit.SHA,
+		)
+		if err != nil {
+			progressBar.Finish()
+			return fmt.Errorf("failed to update timeline: %w", err)
+		}
+	}
+
+	progressBar.Finish()
+	fmt.Printf("Successfully imported %d commits\n\n", totalCommits)
+	return nil
+}
+
+// downloadFilesQuiet downloads files without progress output
+func (rs *RepoSyncer) downloadFilesQuiet(ctx context.Context, owner, repo string, tree *Tree, ref string) error {
+	var filesToDownload []TreeEntry
+	for _, entry := range tree.Tree {
+		if entry.Type == "blob" {
+			localPath := filepath.Join(rs.workDir, entry.Path)
+			if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+				continue
+			}
+			filesToDownload = append(filesToDownload, entry)
+		}
+	}
+
+	if len(filesToDownload) == 0 {
+		return nil
+	}
+
+	workers := 8
+	if len(filesToDownload) > 100 {
+		workers = 16
+	}
+	if len(filesToDownload) > 500 {
+		workers = 32
+	}
+
+	jobs := make(chan TreeEntry, len(filesToDownload))
+	errors := make(chan error, len(filesToDownload))
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for entry := range jobs {
+				if err := rs.downloadFile(ctx, owner, repo, entry, ref); err != nil {
+					errors <- fmt.Errorf("failed to download %s: %w", entry.Path, err)
+				}
+			}
+		}()
+	}
+
+	for _, entry := range filesToDownload {
+		jobs <- entry
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(errors)
+
+	var downloadErrors []error
+	for err := range errors {
+		downloadErrors = append(downloadErrors, err)
+	}
+
+	if len(downloadErrors) > 0 {
+		return fmt.Errorf("failed to download %d files", len(downloadErrors))
+	}
+
+	return nil
+}
+
+// importTags imports tags and releases from GitHub as Ivaldi references
+func (rs *RepoSyncer) importTags(ctx context.Context, owner, repo string) error {
+	tags, err := rs.client.ListTags(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to list tags: %w", err)
+	}
+
+	if len(tags) == 0 {
+		fmt.Println("No tags found")
+		return nil
+	}
+
+	fmt.Printf("Found %d tags\n", len(tags))
+
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	importedCount := 0
+	for _, tag := range tags {
+		// Get the Ivaldi commit hash for this Git commit
+		ivaldiHash, err := refsManager.GetGitMapping(tag.CommitSHA)
+		if err != nil {
+			fmt.Printf("Warning: tag '%s' points to commit %s which was not imported, skipping\n", tag.Name, tag.CommitSHA[:7])
+			continue
+		}
+
+		// Create tag reference in Ivaldi
+		var hashArray [32]byte
+		copy(hashArray[:], ivaldiHash[:])
+
+		err = refsManager.CreateTimeline(
+			"tags/"+tag.Name,
+			refs.LocalTimeline,
+			hashArray,
+			[32]byte{},
+			tag.CommitSHA,
+			fmt.Sprintf("Tag: %s", tag.Name),
+		)
+		if err != nil {
+			fmt.Printf("Warning: failed to create tag '%s': %v\n", tag.Name, err)
+			continue
+		}
+
+		importedCount++
+		fmt.Printf("Imported tag: %s\n", tag.Name)
+	}
+
+	fmt.Printf("Successfully imported %d/%d tags\n", importedCount, len(tags))
 	return nil
 }
 
@@ -143,25 +538,21 @@ func (rs *RepoSyncer) downloadFiles(ctx context.Context, owner, repo string, tre
 
 	jobs := make(chan TreeEntry, len(filesToDownload))
 	errors := make(chan error, len(filesToDownload))
-	progress := make(chan int, len(filesToDownload))
+	progressChan := make(chan int, len(filesToDownload))
 
 	var wg sync.WaitGroup
 	var progressWg sync.WaitGroup
+
+	// Create progress bar for file downloads
+	downloadBar := progress.NewDownloadBar(len(filesToDownload), "Downloading files")
 
 	// Progress reporter
 	progressWg.Add(1)
 	go func() {
 		defer progressWg.Done()
-		downloaded := 0
-		for range progress {
-			downloaded++
-			// Update progress every 10 files or at completion
-			if downloaded%10 == 0 || downloaded == len(filesToDownload) {
-				percentage := (downloaded * 100) / len(filesToDownload)
-				fmt.Printf("\rProgress: %d/%d files (%d%%)...", downloaded, len(filesToDownload), percentage)
-			}
+		for range progressChan {
+			downloadBar.Increment()
 		}
-		fmt.Println() // New line after progress
 	}()
 
 	// Start workers
@@ -173,7 +564,7 @@ func (rs *RepoSyncer) downloadFiles(ctx context.Context, owner, repo string, tre
 				if err := rs.downloadFile(ctx, owner, repo, entry, ref); err != nil {
 					errors <- fmt.Errorf("failed to download %s: %w", entry.Path, err)
 				} else {
-					progress <- 1
+					progressChan <- 1
 				}
 			}
 		}()
@@ -188,8 +579,9 @@ func (rs *RepoSyncer) downloadFiles(ctx context.Context, owner, repo string, tre
 	// Wait for completion
 	wg.Wait()
 	close(errors)
-	close(progress)
+	close(progressChan)
 	progressWg.Wait()
+	downloadBar.Finish()
 
 	// Check for errors
 	var downloadErrors []error
@@ -514,6 +906,10 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 
 	var wg sync.WaitGroup
 
+	// Create progress bar for uploads
+	uploadBar := progress.NewUploadBar(len(filesToUpload), "Uploading files")
+	defer uploadBar.Finish()
+
 	// Start workers
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -534,6 +930,7 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 						err:  nil,
 					}
 				}
+				uploadBar.Increment()
 			}
 		}()
 	}
@@ -566,7 +963,6 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 				Type: "blob",
 				SHA:  result.sha,
 			})
-			fmt.Printf("Uploaded: %s\n", result.path)
 		}
 	}
 
@@ -736,10 +1132,14 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 		if parentSHA == "" {
 			fmt.Printf("Initial upload to empty repository: uploading %d files using Contents API\n", len(files))
 
+			// Create progress bar for initial upload
+			initialUploadBar := progress.NewUploadBar(len(files), "Uploading initial files")
+
 			// Upload files using Contents API (creates commits automatically)
 			for _, filePath := range files {
 				content, err := commitReader.GetFileContent(tree, filePath)
 				if err != nil {
+					initialUploadBar.Finish()
 					return fmt.Errorf("failed to get content for %s: %w", filePath, err)
 				}
 
@@ -753,12 +1153,14 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 				// Upload file using Contents API
 				err = rs.client.UploadFile(ctx, owner, repo, filePath, uploadReq)
 				if err != nil {
+					initialUploadBar.Finish()
 					return fmt.Errorf("failed to upload %s: %w", filePath, err)
 				}
 
-				fmt.Printf("Uploaded: %s\n", filePath)
+				initialUploadBar.Increment()
 			}
 
+			initialUploadBar.Finish()
 			fmt.Printf("Successfully uploaded %d files to empty repository\n", len(files))
 
 			// Get the branch to find the commit SHA created by Contents API

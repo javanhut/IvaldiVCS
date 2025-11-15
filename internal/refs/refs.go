@@ -696,3 +696,18 @@ func (rm *RefsManager) SealExists(sealName string) bool {
 	_, err := os.Stat(sealPath)
 	return err == nil
 }
+
+// GetGitMapping retrieves the Ivaldi BLAKE3 hash for a Git SHA1 hash
+func (rm *RefsManager) GetGitMapping(gitSHA1 string) ([32]byte, error) {
+	blake3Hash, _, err := rm.LookupByGitHash(gitSHA1)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("git mapping not found for %s: %w", gitSHA1, err)
+	}
+	return blake3Hash, nil
+}
+
+// PutGitMapping stores a mapping from Git SHA1 hash to Ivaldi BLAKE3 hash
+func (rm *RefsManager) PutGitMapping(gitSHA1 string, blake3Hash [32]byte) error {
+	var sha256Hash [32]byte
+	return rm.MapGitHashToBlake3(gitSHA1, blake3Hash, sha256Hash)
+}

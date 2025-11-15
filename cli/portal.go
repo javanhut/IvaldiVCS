@@ -16,12 +16,11 @@ var portalCmd = &cobra.Command{
 }
 
 var portalAddCmd = &cobra.Command{
-	Use:   "add <github:owner/repo>",
+	Use:   "add <owner/repo>",
 	Short: "Add a GitHub repository connection",
 	Long: `Add or update the GitHub repository connection for this Ivaldi repository.
 Examples:
-  ivaldi portal add github:myuser/myproject
-  ivaldi portal add myuser/myproject              # github: prefix is optional`,
+  ivaldi portal add myuser/myproject`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check if we're in an Ivaldi repository
@@ -32,9 +31,6 @@ Examples:
 
 		// Parse repository argument
 		repoArg := args[0]
-
-		// Remove github: prefix if present
-		repoArg, _ = strings.CutPrefix(repoArg, "github:")
 
 		// Validate format
 		parts := strings.Split(repoArg, "/")
