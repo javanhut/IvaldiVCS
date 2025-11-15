@@ -186,7 +186,7 @@ func NewClient() (*Client, error) {
 // getAuthToken attempts to get GitHub auth token from various sources
 func getAuthToken() string {
 	// 1. Check Ivaldi OAuth token (highest priority)
-	if token, err := auth.GetToken(); err == nil && token != "" {
+	if token, err := auth.GetToken(auth.PlatformGitHub); err == nil && token != "" {
 		return token
 	}
 
@@ -252,6 +252,9 @@ func getGitConfig(key string) string {
 func getGitCredential(host string) string {
 	cmd := exec.Command("git", "credential", "fill")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("protocol=https\nhost=%s\n\n", host))
+
+	// Disable interactive prompts to prevent user from being prompted
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	output, err := cmd.Output()
 	if err != nil {

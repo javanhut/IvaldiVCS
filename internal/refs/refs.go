@@ -258,6 +258,61 @@ func (rm *RefsManager) RemoveGitHubRepository() error {
 	return rm.db.RemoveConfig("github.repository")
 }
 
+// SetGitLabRepository stores the GitLab repository configuration
+func (rm *RefsManager) SetGitLabRepository(owner, repo string) error {
+	repoURL := fmt.Sprintf("%s/%s", owner, repo)
+	return rm.db.PutConfig("gitlab.repository", repoURL)
+}
+
+// SetGitLabRepositoryWithURL stores the GitLab repository configuration with a custom URL
+func (rm *RefsManager) SetGitLabRepositoryWithURL(owner, repo, baseURL string) error {
+	repoURL := fmt.Sprintf("%s/%s", owner, repo)
+	if err := rm.db.PutConfig("gitlab.repository", repoURL); err != nil {
+		return err
+	}
+	if baseURL != "" {
+		return rm.db.PutConfig("gitlab.url", baseURL)
+	}
+	return nil
+}
+
+// GetGitLabRepository retrieves the GitLab repository configuration
+func (rm *RefsManager) GetGitLabRepository() (owner, repo string, err error) {
+	repoURL, err := rm.db.GetConfig("gitlab.repository")
+	if err != nil {
+		return "", "", err
+	}
+
+	parts := strings.Split(repoURL, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid GitLab repository format: %s", repoURL)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// GetGitLabRepositoryWithURL retrieves the GitLab repository configuration with custom URL
+func (rm *RefsManager) GetGitLabRepositoryWithURL() (owner, repo, baseURL string, err error) {
+	owner, repo, err = rm.GetGitLabRepository()
+	if err != nil {
+		return "", "", "", err
+	}
+
+	baseURL, err = rm.db.GetConfig("gitlab.url")
+	if err != nil {
+		// URL not set, default to empty (will use gitlab.com)
+		return owner, repo, "", nil
+	}
+
+	return owner, repo, baseURL, nil
+}
+
+// RemoveGitLabRepository removes the GitLab repository configuration
+func (rm *RefsManager) RemoveGitLabRepository() error {
+	rm.db.RemoveConfig("gitlab.url") // Ignore error if doesn't exist
+	return rm.db.RemoveConfig("gitlab.repository")
+}
+
 // CreateRemoteTimeline creates a remote timeline reference
 func (rm *RefsManager) CreateRemoteTimeline(name, gitSHA1Hash string, description string) error {
 	// For remote timelines, we initially store with zero hashes until we harvest

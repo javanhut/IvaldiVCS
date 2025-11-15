@@ -14,13 +14,28 @@ import (
 	"time"
 )
 
+// Platform represents a Git hosting platform
+type Platform string
+
 const (
-	// GitHub OAuth App credentials for Ivaldi VCS
-	// Note: These would need to be registered with GitHub
-	ClientID     = "Iv1.b507a08c87ecfe98" // This is a placeholder - you'll need to register your app
-	DeviceCodeURL = "https://github.com/login/device/code"
-	AccessTokenURL = "https://github.com/login/oauth/access_token"
-	Scopes        = "repo,read:user,user:email"
+	PlatformGitHub Platform = "github"
+	PlatformGitLab Platform = "gitlab"
+)
+
+// GitHub OAuth constants
+const (
+	GitHubClientID      = "Iv1.b507a08c87ecfe98" // This is a placeholder - you'll need to register your app
+	GitHubDeviceCodeURL = "https://github.com/login/device/code"
+	GitHubAccessTokenURL = "https://github.com/login/oauth/access_token"
+	GitHubScopes        = "repo,read:user,user:email"
+)
+
+// GitLab OAuth constants
+const (
+	GitLabClientID      = "" // Placeholder - needs to be registered
+	GitLabDeviceCodeURL = "https://gitlab.com/oauth/authorize_device"
+	GitLabAccessTokenURL = "https://gitlab.com/oauth/token"
+	GitLabScopes        = "read_api,write_repository,read_user"
 )
 
 // TokenStore manages OAuth tokens
@@ -28,12 +43,18 @@ type TokenStore struct {
 	configPath string
 }
 
-// Token represents an OAuth token
+// Token represents an OAuth token for a specific platform
 type Token struct {
 	AccessToken string    `json:"access_token"`
 	TokenType   string    `json:"token_type"`
 	Scope       string    `json:"scope"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+// TokenStorage stores tokens for multiple platforms
+type TokenStorage struct {
+	GitHub *Token `json:"github,omitempty"`
+	GitLab *Token `json:"gitlab,omitempty"`
 }
 
 // DeviceCodeResponse represents the response from device code request
@@ -71,8 +92,8 @@ func NewTokenStore() (*TokenStore, error) {
 	}, nil
 }
 
-// LoadToken loads the stored token
-func (ts *TokenStore) LoadToken() (*Token, error) {
+// LoadToken loads the stored token for a specific platform
+func (ts *TokenStore) LoadToken(platform Platform) (*Token, error) {
 	data, err := os.ReadFile(ts.configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -81,45 +102,151 @@ func (ts *TokenStore) LoadToken() (*Token, error) {
 		return nil, fmt.Errorf("failed to read token: %w", err)
 	}
 
+	// Try to parse as new multi-platform format first
+	var storage TokenStorage
+	if err := json.Unmarshal(data, &storage); err == nil {
+		switch platform {
+		case PlatformGitHub:
+			return storage.GitHub, nil
+		case PlatformGitLab:
+			return storage.GitLab, nil
+		default:
+			return nil, fmt.Errorf("unknown platform: %s", platform)
+		}
+	}
+
+	// Fall back to old single-token format for backward compatibility
+	// This assumes old tokens are GitHub tokens
+	if platform == PlatformGitHub {
+		var token Token
+		if err := json.Unmarshal(data, &token); err != nil {
+			return nil, fmt.Errorf("failed to parse token: %w", err)
+		}
+		return &token, nil
+	}
+
+	return nil, nil
+}
+
+// LoadAllTokens loads all stored tokens
+func (ts *TokenStore) LoadAllTokens() (*TokenStorage, error) {
+	data, err := os.ReadFile(ts.configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &TokenStorage{}, nil
+		}
+		return nil, fmt.Errorf("failed to read tokens: %w", err)
+	}
+
+	// Try to parse as new multi-platform format
+	var storage TokenStorage
+	if err := json.Unmarshal(data, &storage); err == nil {
+		return &storage, nil
+	}
+
+	// Fall back to old single-token format
 	var token Token
 	if err := json.Unmarshal(data, &token); err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}
 
-	return &token, nil
+	// Migrate old format to new format
+	return &TokenStorage{GitHub: &token}, nil
 }
 
-// SaveToken saves the token to disk
-func (ts *TokenStore) SaveToken(token *Token) error {
+// SaveToken saves the token for a specific platform to disk
+func (ts *TokenStore) SaveToken(platform Platform, token *Token) error {
 	token.CreatedAt = time.Now()
 
-	data, err := json.MarshalIndent(token, "", "  ")
+	// Load existing tokens
+	storage, err := ts.LoadAllTokens()
 	if err != nil {
-		return fmt.Errorf("failed to marshal token: %w", err)
+		return err
+	}
+
+	// Update the token for the specified platform
+	switch platform {
+	case PlatformGitHub:
+		storage.GitHub = token
+	case PlatformGitLab:
+		storage.GitLab = token
+	default:
+		return fmt.Errorf("unknown platform: %s", platform)
+	}
+
+	// Save updated storage
+	data, err := json.MarshalIndent(storage, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal tokens: %w", err)
 	}
 
 	if err := os.WriteFile(ts.configPath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write token: %w", err)
+		return fmt.Errorf("failed to write tokens: %w", err)
 	}
 
 	return nil
 }
 
-// DeleteToken removes the stored token
-func (ts *TokenStore) DeleteToken() error {
-	if err := os.Remove(ts.configPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to delete token: %w", err)
+// DeleteToken removes the stored token for a specific platform
+func (ts *TokenStore) DeleteToken(platform Platform) error {
+	storage, err := ts.LoadAllTokens()
+	if err != nil {
+		return err
 	}
+
+	// Remove the token for the specified platform
+	switch platform {
+	case PlatformGitHub:
+		storage.GitHub = nil
+	case PlatformGitLab:
+		storage.GitLab = nil
+	default:
+		return fmt.Errorf("unknown platform: %s", platform)
+	}
+
+	// If no tokens remain, delete the file
+	if storage.GitHub == nil && storage.GitLab == nil {
+		if err := os.Remove(ts.configPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to delete token file: %w", err)
+		}
+		return nil
+	}
+
+	// Otherwise, save updated storage
+	data, err := json.MarshalIndent(storage, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal tokens: %w", err)
+	}
+
+	if err := os.WriteFile(ts.configPath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write tokens: %w", err)
+	}
+
 	return nil
 }
 
-// RequestDeviceCode initiates the OAuth device flow
-func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
+// RequestDeviceCode initiates the OAuth device flow for a specific platform
+func RequestDeviceCode(ctx context.Context, platform Platform) (*DeviceCodeResponse, error) {
+	var clientID, deviceCodeURL, scopes string
+
+	switch platform {
+	case PlatformGitHub:
+		clientID = GitHubClientID
+		deviceCodeURL = GitHubDeviceCodeURL
+		scopes = GitHubScopes
+	case PlatformGitLab:
+		clientID = GitLabClientID
+		deviceCodeURL = GitLabDeviceCodeURL
+		scopes = GitLabScopes
+	default:
+		return nil, fmt.Errorf("unknown platform: %s", platform)
+	}
+
 	data := url.Values{}
-	data.Set("client_id", ClientID)
-	data.Set("scope", Scopes)
+	data.Set("client_id", clientID)
+	data.Set("scope", scopes)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", DeviceCodeURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", deviceCodeURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -147,8 +274,8 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 	return &deviceCode, nil
 }
 
-// PollForAccessToken polls GitHub for the access token
-func PollForAccessToken(ctx context.Context, deviceCode string, interval int) (*Token, error) {
+// PollForAccessToken polls the platform for the access token
+func PollForAccessToken(ctx context.Context, platform Platform, deviceCode string, interval int) (*Token, error) {
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
@@ -157,7 +284,7 @@ func PollForAccessToken(ctx context.Context, deviceCode string, interval int) (*
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-			token, err := checkAccessToken(ctx, deviceCode)
+			token, err := checkAccessToken(ctx, platform, deviceCode)
 			if err != nil {
 				// Check if it's a retriable error
 				if strings.Contains(err.Error(), "authorization_pending") {
@@ -176,13 +303,26 @@ func PollForAccessToken(ctx context.Context, deviceCode string, interval int) (*
 }
 
 // checkAccessToken checks if the access token is ready
-func checkAccessToken(ctx context.Context, deviceCode string) (*Token, error) {
+func checkAccessToken(ctx context.Context, platform Platform, deviceCode string) (*Token, error) {
+	var clientID, accessTokenURL string
+
+	switch platform {
+	case PlatformGitHub:
+		clientID = GitHubClientID
+		accessTokenURL = GitHubAccessTokenURL
+	case PlatformGitLab:
+		clientID = GitLabClientID
+		accessTokenURL = GitLabAccessTokenURL
+	default:
+		return nil, fmt.Errorf("unknown platform: %s", platform)
+	}
+
 	data := url.Values{}
-	data.Set("client_id", ClientID)
+	data.Set("client_id", clientID)
 	data.Set("device_code", deviceCode)
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 
-	req, err := http.NewRequestWithContext(ctx, "POST", AccessTokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", accessTokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -217,14 +357,14 @@ func checkAccessToken(ctx context.Context, deviceCode string) (*Token, error) {
 	}, nil
 }
 
-// GetToken returns the current token if available
-func GetToken() (string, error) {
+// GetToken returns the current token for a platform if available
+func GetToken(platform Platform) (string, error) {
 	store, err := NewTokenStore()
 	if err != nil {
 		return "", err
 	}
 
-	token, err := store.LoadToken()
+	token, err := store.LoadToken(platform)
 	if err != nil {
 		return "", err
 	}
@@ -236,9 +376,9 @@ func GetToken() (string, error) {
 	return token.AccessToken, nil
 }
 
-// IsAuthenticated checks if the user is authenticated
-func IsAuthenticated() bool {
-	token, err := GetToken()
+// IsAuthenticated checks if the user is authenticated for a specific platform
+func IsAuthenticated(platform Platform) bool {
+	token, err := GetToken(platform)
 	return err == nil && token != ""
 }
 
@@ -249,17 +389,31 @@ type AuthMethod struct {
 	Token       string
 }
 
-// GetAuthMethod returns the active authentication method
-func GetAuthMethod() *AuthMethod {
+// GetAuthMethod returns the active authentication method for a specific platform
+func GetAuthMethod(platform Platform) *AuthMethod {
 	// 1. Check Ivaldi OAuth token
-	if token, err := GetToken(); err == nil && token != "" {
+	if token, err := GetToken(platform); err == nil && token != "" {
+		platformName := string(platform)
 		return &AuthMethod{
 			Name:        "ivaldi",
-			Description: "Authenticated via 'ivaldi auth login'",
+			Description: fmt.Sprintf("Authenticated via 'ivaldi auth login --%s'", platformName),
 			Token:       token,
 		}
 	}
 
+	// Platform-specific checks
+	switch platform {
+	case PlatformGitHub:
+		return getGitHubAuthMethod()
+	case PlatformGitLab:
+		return getGitLabAuthMethod()
+	}
+
+	return nil
+}
+
+// getGitHubAuthMethod checks GitHub-specific authentication methods
+func getGitHubAuthMethod() *AuthMethod {
 	// 2. Check environment variable
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		return &AuthMethod{
@@ -301,6 +455,56 @@ func GetAuthMethod() *AuthMethod {
 		return &AuthMethod{
 			Name:        "gh-cli",
 			Description: "Authenticated via 'gh auth login' (GitHub CLI)",
+			Token:       token,
+		}
+	}
+
+	return nil
+}
+
+// getGitLabAuthMethod checks GitLab-specific authentication methods
+func getGitLabAuthMethod() *AuthMethod {
+	// 2. Check environment variable
+	if token := os.Getenv("GITLAB_TOKEN"); token != "" {
+		return &AuthMethod{
+			Name:        "env",
+			Description: "Authenticated via GITLAB_TOKEN environment variable",
+			Token:       token,
+		}
+	}
+
+	// 3. Check git config for gitlab token
+	if token := getGitConfig("gitlab.token"); token != "" {
+		return &AuthMethod{
+			Name:        "git-config",
+			Description: "Authenticated via git config (gitlab.token)",
+			Token:       token,
+		}
+	}
+
+	// 4. Try to read from git credential helper
+	if token := getGitCredential("gitlab.com"); token != "" {
+		return &AuthMethod{
+			Name:        "git-credential",
+			Description: "Authenticated via git credential helper",
+			Token:       token,
+		}
+	}
+
+	// 5. Check .netrc file
+	if token := getNetrcToken("gitlab.com"); token != "" {
+		return &AuthMethod{
+			Name:        "netrc",
+			Description: "Authenticated via .netrc file",
+			Token:       token,
+		}
+	}
+
+	// 6. Check glab CLI config (GitLab CLI)
+	if token := getGLabCLIToken(); token != "" {
+		return &AuthMethod{
+			Name:        "glab-cli",
+			Description: "Authenticated via 'glab auth login' (GitLab CLI)",
 			Token:       token,
 		}
 	}
@@ -395,11 +599,37 @@ func getGHCLIToken() string {
 	return ""
 }
 
-// Login performs the OAuth device flow login
-func Login(ctx context.Context) error {
-	fmt.Println("Initiating GitHub authentication...")
+func getGLabCLIToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
 
-	deviceCode, err := RequestDeviceCode(ctx)
+	glabConfigPath := filepath.Join(home, ".config", "glab-cli", "config.yml")
+	content, err := os.ReadFile(glabConfigPath)
+	if err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(content), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "token:") && i > 0 && strings.Contains(lines[i-1], "gitlab.com") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+
+	return ""
+}
+
+// Login performs the OAuth device flow login for a specific platform
+func Login(ctx context.Context, platform Platform) error {
+	platformName := string(platform)
+	fmt.Printf("Initiating %s authentication...\n", platformName)
+
+	deviceCode, err := RequestDeviceCode(ctx, platform)
 	if err != nil {
 		return fmt.Errorf("failed to start authentication: %w", err)
 	}
@@ -408,7 +638,7 @@ func Login(ctx context.Context) error {
 	fmt.Printf("Then visit: %s\n", deviceCode.VerificationURI)
 	fmt.Println("\nWaiting for authentication...")
 
-	token, err := PollForAccessToken(ctx, deviceCode.DeviceCode, deviceCode.Interval)
+	token, err := PollForAccessToken(ctx, platform, deviceCode.DeviceCode, deviceCode.Interval)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
@@ -418,25 +648,26 @@ func Login(ctx context.Context) error {
 		return err
 	}
 
-	if err := store.SaveToken(token); err != nil {
+	if err := store.SaveToken(platform, token); err != nil {
 		return fmt.Errorf("failed to save token: %w", err)
 	}
 
-	fmt.Println("\nAuthentication successful!")
+	fmt.Printf("\n%s authentication successful!\n", platformName)
 	return nil
 }
 
-// Logout removes the stored authentication token
-func Logout() error {
+// Logout removes the stored authentication token for a specific platform
+func Logout(platform Platform) error {
 	store, err := NewTokenStore()
 	if err != nil {
 		return err
 	}
 
-	if err := store.DeleteToken(); err != nil {
+	if err := store.DeleteToken(platform); err != nil {
 		return err
 	}
 
-	fmt.Println("Logged out successfully")
+	platformName := string(platform)
+	fmt.Printf("Logged out from %s successfully\n", platformName)
 	return nil
 }

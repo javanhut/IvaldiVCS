@@ -18,6 +18,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/converter"
 	"github.com/javanhut/Ivaldi-vcs/internal/github"
+	"github.com/javanhut/Ivaldi-vcs/internal/gitlab"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/seals"
@@ -216,6 +217,172 @@ func handleGitHubDownload(rawURL string, args []string) error {
 	return nil
 }
 
+// isGitLabURL checks if a URL is a GitLab URL
+func isGitLabURL(rawURL string) bool {
+	// Handle various GitLab URL formats
+	patterns := []string{
+		`^https?://gitlab\.com/[\w-]+/[\w-]+`,
+		`^git@gitlab\.com:[\w-]+/[\w-]+`,
+		`^gitlab\.com/[\w-]+/[\w-]+`,
+	}
+
+	for _, pattern := range patterns {
+		matched, _ := regexp.MatchString(pattern, rawURL)
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// parseGitLabURL extracts owner and repo from various GitLab URL formats
+func parseGitLabURL(rawURL string) (owner, repo string, err error) {
+	// Remove .git suffix if present
+	rawURL = strings.TrimSuffix(rawURL, ".git")
+
+	// Handle full URLs
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		// Try adding https:// if not present
+		if !strings.HasPrefix(rawURL, "http") && !strings.HasPrefix(rawURL, "git@") {
+			parsedURL, err = url.Parse("https://" + rawURL)
+			if err != nil {
+				return "", "", fmt.Errorf("invalid URL: %s", rawURL)
+			}
+		} else if strings.HasPrefix(rawURL, "git@gitlab.com:") {
+			// Handle git@gitlab.com:owner/repo format
+			path := strings.TrimPrefix(rawURL, "git@gitlab.com:")
+			parts := strings.Split(path, "/")
+			if len(parts) == 2 {
+				return parts[0], parts[1], nil
+			}
+			return "", "", fmt.Errorf("invalid git URL format: %s", rawURL)
+		} else {
+			return "", "", err
+		}
+	}
+
+	// Extract path and parse owner/repo
+	path := strings.TrimPrefix(parsedURL.Path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid GitLab URL format: %s", rawURL)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// handleGitLabDownload handles downloading/cloning from GitLab
+func handleGitLabDownload(rawURL string, args []string, baseURL string) error {
+	// Parse GitLab URL with host detection
+	owner, repo, detectedHost, err := gitlab.ParseGitLabURLWithHost(rawURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse GitLab URL: %w", err)
+	}
+
+	// Use detected host if no explicit baseURL was provided via --url flag
+	// and the detected host is not the default gitlab.com
+	if baseURL == "" && detectedHost != "" && detectedHost != "gitlab.com" {
+		baseURL = detectedHost
+	}
+
+	// Determine target directory
+	targetDir := repo
+	if len(args) > 1 {
+		targetDir = args[1]
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Change to target directory
+	if err := os.Chdir(targetDir); err != nil {
+		return fmt.Errorf("failed to change directory: %w", err)
+	}
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	// Initialize Ivaldi repository
+	ivaldiDir := ".ivaldi"
+	if err := os.Mkdir(ivaldiDir, os.ModePerm); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to create .ivaldi directory: %w", err)
+	}
+
+	log.Println("Ivaldi repository initialized")
+
+	// Initialize refs system
+	refsManager, err := refs.NewRefsManager(ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to initialize refs: %w", err)
+	}
+	defer refsManager.Close()
+
+	// Create main timeline
+	var zeroHash [32]byte
+	err = refsManager.CreateTimeline(
+		"main",
+		refs.LocalTimeline,
+		zeroHash,
+		zeroHash,
+		"",
+		fmt.Sprintf("Clone from GitLab: %s/%s", owner, repo),
+	)
+	if err != nil {
+		log.Printf("Warning: Failed to create main timeline: %v", err)
+	}
+
+	// Set main as current timeline
+	if err := refsManager.SetCurrentTimeline("main"); err != nil {
+		log.Printf("Warning: Failed to set current timeline: %v", err)
+	}
+
+	// Store GitLab repository configuration with custom URL if provided
+	if baseURL != "" {
+		if err := refsManager.SetGitLabRepositoryWithURL(owner, repo, baseURL); err != nil {
+			log.Printf("Warning: Failed to store GitLab repository configuration: %v", err)
+		} else {
+			fmt.Printf("Configured repository for GitLab: %s/%s (URL: %s)\n", owner, repo, baseURL)
+		}
+	} else {
+		if err := refsManager.SetGitLabRepository(owner, repo); err != nil {
+			log.Printf("Warning: Failed to store GitLab repository configuration: %v", err)
+		} else {
+			fmt.Printf("Configured repository for GitLab: %s/%s\n", owner, repo)
+		}
+	}
+
+	// Create syncer and clone
+	var syncer *gitlab.RepoSyncer
+	if baseURL != "" {
+		syncer, err = gitlab.NewRepoSyncerWithURL(ivaldiDir, workDir, owner, repo, baseURL)
+	} else {
+		syncer, err = gitlab.NewRepoSyncer(ivaldiDir, workDir, owner, repo)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to create syncer: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	if baseURL != "" {
+		fmt.Printf("Downloading from GitLab (%s): %s/%s...\n", baseURL, owner, repo)
+	} else {
+		fmt.Printf("Downloading from GitLab: %s/%s...\n", owner, repo)
+	}
+	if err := syncer.CloneRepository(ctx, owner, repo); err != nil {
+		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	fmt.Printf("Successfully downloaded repository from GitLab\n")
+	return nil
+}
+
 var uploadCmd = &cobra.Command{
 	Use:     "upload [branch]",
 	Aliases: []string{"push"},
@@ -359,14 +526,35 @@ var downloadCmd = &cobra.Command{
 	Use:     "download <url> [directory]",
 	Aliases: []string{"clone"},
 	Short:   "Download/clone repository from remote",
-	Long:    `Downloads a complete repository from a remote URL into a new directory. Supports GitHub repositories and standard Ivaldi remotes.`,
+	Long:    `Downloads a complete repository from a remote URL into a new directory. Supports GitHub, GitLab, and generic Git repositories.`,
 	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := args[0]
+		gitlabFlag, _ := cmd.Flags().GetBool("gitlab")
+		customURL, _ := cmd.Flags().GetString("url")
 
-		// Check if this is a GitHub URL
+		// Check --gitlab flag for explicit GitLab handling
+		if gitlabFlag {
+			return handleGitLabDownload(url, args, customURL)
+		}
+
+		// Auto-detect platform from URL
 		if isGitHubURL(url) {
 			return handleGitHubDownload(url, args)
+		}
+
+		if isGitLabURL(url) {
+			return handleGitLabDownload(url, args, customURL)
+		}
+
+		// Check if it's a generic Git URL (http/https)
+		if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+			fmt.Printf("Downloading from generic Git repository: %s\n", url)
+			fmt.Println("Note: Generic Git repository download not yet fully implemented.")
+			fmt.Println("Ivaldi will use its native protocol for non-GitHub/GitLab URLs.")
+
+			// TODO: Implement generic Git download using go-git or ivaldi protocol
+			return fmt.Errorf("generic Git repository download not yet implemented")
 		}
 
 		// Standard Ivaldi remote download
@@ -884,6 +1072,8 @@ var sealCmd = &cobra.Command{
 func init() {
 	statusCmd.Flags().BoolVar(&statusVerbose, "verbose", false, "Show more detailed status information")
 	downloadCmd.Flags().BoolVar(&recurseSubmodules, "recurse-submodules", true, "Automatically clone and convert Git submodules (default: true)")
+	downloadCmd.Flags().Bool("gitlab", false, "Download from GitLab instead of GitHub")
+	downloadCmd.Flags().String("url", "", "Custom GitLab instance URL (e.g., gitlab.javanstormbreaker.com)")
 	uploadCmd.Flags().BoolVar(&forceUpload, "force", false, "Force push to remote (overwrites remote history - use with caution!)")
 }
 
