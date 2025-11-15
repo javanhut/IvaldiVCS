@@ -17,6 +17,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/converter"
+	"github.com/javanhut/Ivaldi-vcs/internal/gitclone"
 	"github.com/javanhut/Ivaldi-vcs/internal/github"
 	"github.com/javanhut/Ivaldi-vcs/internal/gitlab"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
@@ -26,6 +27,34 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
 	"github.com/spf13/cobra"
 )
+
+// isGitURL checks if the URL is a generic Git repository URL
+func isGitURL(rawURL string) bool {
+	// Detect generic Git URLs
+	patterns := []string{
+		`^https?://.*\.git$`, // https://server.com/repo.git
+		`^git://`,            // git://server.com/repo
+		`^ssh://git@`,        // ssh://git@server.com/repo
+		`^git@[\w\.-]+:`,     // git@server.com:user/repo.git
+	}
+
+	for _, pattern := range patterns {
+		matched, _ := regexp.MatchString(pattern, rawURL)
+		if matched {
+			return true
+		}
+	}
+
+	// Also check for https://any-server.com/path (not GitHub/GitLab)
+	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+		// Not GitHub or GitLab - likely a generic Git server
+		if !isGitHubURL(rawURL) && !isGitLabURL(rawURL) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // isGitHubURL checks if the given URL is a GitHub repository URL
 func isGitHubURL(rawURL string) bool {
@@ -383,6 +412,115 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string, depth in
 	return nil
 }
 
+// handleGenericGitDownload handles downloading from any Git server
+func handleGenericGitDownload(rawURL string, args []string, depth int, skipHistory bool, includeTags bool, username, password, token, sshKey string) error {
+	// Determine target directory
+	targetDir := extractRepoName(rawURL)
+	if len(args) > 1 {
+		targetDir = args[1]
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Change to target directory
+	if err := os.Chdir(targetDir); err != nil {
+		return fmt.Errorf("failed to change directory: %w", err)
+	}
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	// Initialize Ivaldi repository
+	ivaldiDir := ".ivaldi"
+	if err := os.Mkdir(ivaldiDir, os.ModePerm); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("failed to create .ivaldi directory: %w", err)
+	}
+
+	log.Println("Ivaldi repository initialized")
+
+	// Initialize refs system
+	refsManager, err := refs.NewRefsManager(ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to initialize refs: %w", err)
+	}
+	defer refsManager.Close()
+
+	// Create main timeline
+	var zeroHash [32]byte
+	err = refsManager.CreateTimeline(
+		"main",
+		refs.LocalTimeline,
+		zeroHash,
+		zeroHash,
+		"",
+		fmt.Sprintf("Clone from Git: %s", rawURL),
+	)
+	if err != nil {
+		log.Printf("Warning: Failed to create main timeline: %v", err)
+	}
+
+	// Set main as current timeline
+	if err := refsManager.SetCurrentTimeline("main"); err != nil {
+		log.Printf("Warning: Failed to set current timeline: %v", err)
+	}
+
+	// Create cloner
+	cloner, err := gitclone.NewCloner(ivaldiDir, workDir)
+	if err != nil {
+		return fmt.Errorf("failed to create cloner: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	fmt.Printf("Downloading from Git repository: %s...\n", rawURL)
+
+	// Clone options
+	cloneOpts := &gitclone.CloneOptions{
+		URL:         rawURL,
+		Depth:       depth,
+		SkipHistory: skipHistory,
+		IncludeTags: includeTags,
+		Username:    username,
+		Password:    password,
+		Token:       token,
+		SSHKey:      sshKey,
+	}
+
+	if err := cloner.Clone(ctx, cloneOpts); err != nil {
+		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	fmt.Printf("Successfully downloaded repository from Git server\n")
+	return nil
+}
+
+// extractRepoName extracts repository name from Git URL
+func extractRepoName(url string) string {
+	// Remove .git suffix
+	url = strings.TrimSuffix(url, ".git")
+
+	// Handle different URL formats
+	if strings.HasPrefix(url, "git@") {
+		// git@server.com:user/repo -> repo
+		parts := strings.Split(url, ":")
+		if len(parts) > 1 {
+			path := parts[len(parts)-1]
+			pathParts := strings.Split(path, "/")
+			return pathParts[len(pathParts)-1]
+		}
+	}
+
+	// Handle HTTP(S) and other URLs
+	parts := strings.Split(url, "/")
+	return parts[len(parts)-1]
+}
+
 var uploadCmd = &cobra.Command{
 	Use:     "upload [branch]",
 	Aliases: []string{"push"},
@@ -516,6 +654,10 @@ var downloadCmd = &cobra.Command{
 		depth, _ := cmd.Flags().GetInt("depth")
 		skipHistory, _ := cmd.Flags().GetBool("skip-history")
 		includeTags, _ := cmd.Flags().GetBool("include-tags")
+		username, _ := cmd.Flags().GetString("username")
+		password, _ := cmd.Flags().GetString("password")
+		token, _ := cmd.Flags().GetString("token")
+		sshKey, _ := cmd.Flags().GetString("ssh-key")
 
 		// Check --gitlab flag for explicit GitLab handling
 		if gitlabFlag {
@@ -531,14 +673,9 @@ var downloadCmd = &cobra.Command{
 			return handleGitLabDownload(url, args, customURL, depth, skipHistory, includeTags)
 		}
 
-		// Check if it's a generic Git URL (http/https)
-		if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-			fmt.Printf("Downloading from generic Git repository: %s\n", url)
-			fmt.Println("Note: Generic Git repository download not yet fully implemented.")
-			fmt.Println("Ivaldi will use its native protocol for non-GitHub/GitLab URLs.")
-
-			// TODO: Implement generic Git download using go-git or ivaldi protocol
-			return fmt.Errorf("generic Git repository download not yet implemented")
+		// Check if it's a generic Git URL
+		if isGitURL(url) {
+			return handleGenericGitDownload(url, args, depth, skipHistory, includeTags, username, password, token, sshKey)
 		}
 
 		// Standard Ivaldi remote download
@@ -1061,6 +1198,13 @@ func init() {
 	downloadCmd.Flags().Int("depth", 0, "Limit commit history depth (0 for full history)")
 	downloadCmd.Flags().Bool("skip-history", false, "Skip commit history migration, download only latest snapshot")
 	downloadCmd.Flags().Bool("include-tags", false, "Include tags and releases in the import")
+
+	// Generic Git authentication flags
+	downloadCmd.Flags().String("username", "", "Username for HTTP basic authentication")
+	downloadCmd.Flags().String("password", "", "Password for HTTP basic authentication")
+	downloadCmd.Flags().String("token", "", "Personal access token for authentication")
+	downloadCmd.Flags().String("ssh-key", "", "Path to SSH private key (default: ~/.ssh/id_rsa)")
+
 	uploadCmd.Flags().BoolVar(&forceUpload, "force", false, "Force push to remote (overwrites remote history - use with caution!)")
 }
 
