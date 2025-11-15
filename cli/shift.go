@@ -284,7 +284,7 @@ func selectCommitRangeForShift(casStore cas.CAS, refsManager *refs.RefsManager, 
 	fmt.Printf("\n%s Select START of commit range (oldest):\n\n",
 		colors.Bold("⏱"))
 
-	startSeal, err := selectSealWithArrowKeys(allSeals, timelineName, 0, len(allSeals))
+	startSeal, err := selectSealWithScrollWindow(allSeals, timelineName, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -306,10 +306,7 @@ func selectCommitRangeForShift(casStore cas.CAS, refsManager *refs.RefsManager, 
 	fmt.Printf("\n%s Select END of commit range (newest):\n\n",
 		colors.Bold("⏱"))
 
-	// Mark the start position
-	displaySealsWithMarker(filteredSeals, timelineName, startSeal.Hash)
-
-	endSeal, err := selectSealWithArrowKeys(filteredSeals, timelineName, 0, len(filteredSeals))
+	endSeal, err := selectSealWithScrollWindow(filteredSeals, timelineName, 0)
 	if err != nil {
 		return nil, nil, err
 	}
