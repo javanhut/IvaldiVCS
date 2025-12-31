@@ -29,6 +29,7 @@ type Client struct {
 	httpClient  *http.Client
 	baseURL     string
 	token       string
+	tokenType   string
 	username    string
 	rateLimiter *RateLimiter
 }
@@ -186,11 +187,18 @@ type UpdateRefRequest struct {
 // NewClient creates a new GitHub API client
 func NewClient() (*Client, error) {
 	// Try to get authentication from various sources
-	token := getAuthToken()
+	token, tokenType := getAuthToken()
 	username := getUsername()
 
 	if token == "" {
-		return nil, fmt.Errorf("no GitHub authentication found. Run 'ivaldi auth login' to authenticate or set GITHUB_TOKEN environment variable")
+		return nil, fmt.Errorf("no GitHub authentication found.\n\n" +
+			"To authenticate, you have two options:\n\n" +
+			"Option 1 - OAuth (Recommended, works like 'gh auth login'):\n" +
+			"  Run: ivaldi auth login\n\n" +
+			"Option 2 - Personal Access Token:\n" +
+			"  1. Create a token at: https://github.com/settings/tokens/new\n" +
+			"  2. Grant 'repo' scope\n" +
+			"  3. Set: export GITHUB_TOKEN=your_token_here")
 	}
 
 	return &Client{
@@ -199,44 +207,46 @@ func NewClient() (*Client, error) {
 		},
 		baseURL:     GitHubAPIURL,
 		token:       token,
+		tokenType:   tokenType,
 		username:    username,
 		rateLimiter: &RateLimiter{},
 	}, nil
 }
 
 // getAuthToken attempts to get GitHub auth token from various sources
-func getAuthToken() string {
+func getAuthToken() (string, string) {
 	// 1. Check Ivaldi OAuth token (highest priority)
 	if token, err := auth.GetToken(auth.PlatformGitHub); err == nil && token != "" {
-		return token
+		tokenType, _ := auth.GetTokenType(auth.PlatformGitHub)
+		return token, tokenType
 	}
 
 	// 2. Check environment variable
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 3. Check git config for github token
 	if token := getGitConfig("github.token"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 4. Try to read from git credential helper
 	if token := getGitCredential("github.com"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 5. Check .netrc file
 	if token := getNetrcToken("github.com"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 6. Check gh CLI config
 	if token := getGHCLIToken(); token != "" {
-		return token
+		return token, ""
 	}
 
-	return ""
+	return "", ""
 }
 
 // getUsername attempts to get GitHub username
@@ -374,7 +384,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	// Set headers
 	req.Header.Set("Accept", AcceptHeader)
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", c.token))
+	req.Header.Set("Authorization", fmt.Sprintf("%s %s", c.authHeaderType(), c.token))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -395,6 +405,13 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}
 
 	return resp, nil
+}
+
+func (c *Client) authHeaderType() string {
+	if strings.EqualFold(c.tokenType, "bearer") {
+		return "Bearer"
+	}
+	return "token"
 }
 
 // updateRateLimits updates rate limit information from response headers

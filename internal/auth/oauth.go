@@ -24,10 +24,13 @@ const (
 
 // GitHub OAuth constants
 const (
-	GitHubClientID      = "Iv1.b507a08c87ecfe98" // This is a placeholder - you'll need to register your app
-	GitHubDeviceCodeURL = "https://github.com/login/device/code"
+	// GitHubClientID - Using GitHub CLI's public OAuth App by default
+	// This allows Ivaldi to work exactly like 'gh auth login' without requiring users to create their own OAuth App
+	// Users can override with their own OAuth App via IVALDI_GITHUB_CLIENT_ID environment variable
+	GitHubClientID       = "178c6fc778ccc68e1d6a" // GitHub CLI's public OAuth App
+	GitHubDeviceCodeURL  = "https://github.com/login/device/code"
 	GitHubAccessTokenURL = "https://github.com/login/oauth/access_token"
-	GitHubScopes        = "repo,read:user,user:email"
+	GitHubScopes         = "repo,read:user,user:email"
 )
 
 // GitLab OAuth constants
@@ -231,9 +234,9 @@ func RequestDeviceCode(ctx context.Context, platform Platform) (*DeviceCodeRespo
 
 	switch platform {
 	case PlatformGitHub:
-		clientID = GitHubClientID
+		clientID = getGitHubClientID()
 		deviceCodeURL = GitHubDeviceCodeURL
-		scopes = GitHubScopes
+		scopes = getGitHubScopes()
 	case PlatformGitLab:
 		clientID = GitLabClientID
 		deviceCodeURL = GitLabDeviceCodeURL
@@ -308,7 +311,7 @@ func checkAccessToken(ctx context.Context, platform Platform, deviceCode string)
 
 	switch platform {
 	case PlatformGitHub:
-		clientID = GitHubClientID
+		clientID = getGitHubClientID()
 		accessTokenURL = GitHubAccessTokenURL
 	case PlatformGitLab:
 		clientID = GitLabClientID
@@ -357,6 +360,24 @@ func checkAccessToken(ctx context.Context, platform Platform, deviceCode string)
 	}, nil
 }
 
+func getGitHubClientID() string {
+	if v := strings.TrimSpace(os.Getenv("IVALDI_GITHUB_CLIENT_ID")); v != "" {
+		return v
+	}
+	if GitHubClientID == "" {
+		// Return empty string - this will be caught in RequestDeviceCode
+		return ""
+	}
+	return GitHubClientID
+}
+
+func getGitHubScopes() string {
+	if v := strings.TrimSpace(os.Getenv("IVALDI_GITHUB_SCOPES")); v != "" {
+		return v
+	}
+	return GitHubScopes
+}
+
 // GetToken returns the current token for a platform if available
 func GetToken(platform Platform) (string, error) {
 	store, err := NewTokenStore()
@@ -374,6 +395,25 @@ func GetToken(platform Platform) (string, error) {
 	}
 
 	return token.AccessToken, nil
+}
+
+// GetTokenType returns the stored token type for a platform if available.
+func GetTokenType(platform Platform) (string, error) {
+	store, err := NewTokenStore()
+	if err != nil {
+		return "", err
+	}
+
+	token, err := store.LoadToken(platform)
+	if err != nil {
+		return "", err
+	}
+
+	if token == nil {
+		return "", nil
+	}
+
+	return token.TokenType, nil
 }
 
 // IsAuthenticated checks if the user is authenticated for a specific platform
