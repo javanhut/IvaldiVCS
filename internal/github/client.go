@@ -142,11 +142,11 @@ type CreateTreeRequest struct {
 
 // GitTreeEntry represents an entry when creating a tree
 type GitTreeEntry struct {
-	Path    string `json:"path"`
-	Mode    string `json:"mode"`
-	Type    string `json:"type"`
-	SHA     string `json:"sha,omitempty"`
-	Content string `json:"content,omitempty"`
+	Path    string  `json:"path"`
+	Mode    string  `json:"mode"`
+	Type    string  `json:"type"`
+	SHA     *string `json:"sha,omitempty"`
+	Content *string `json:"content,omitempty"`
 }
 
 // TreeResponse represents a response from creating a tree

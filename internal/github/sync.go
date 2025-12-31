@@ -957,11 +957,12 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 		if result.err != nil {
 			errors = append(errors, fmt.Errorf("failed to upload %s: %w", result.path, result.err))
 		} else {
+			sha := result.sha
 			treeEntries = append(treeEntries, GitTreeEntry{
 				Path: result.path,
 				Mode: result.mode,
 				Type: "blob",
-				SHA:  result.sha,
+				SHA:  &sha,
 			})
 		}
 	}
@@ -970,17 +971,11 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 		return nil, fmt.Errorf("failed to upload %d files: %v", len(errors), errors[0])
 	}
 
-	// Add deletions as tree entries with nil SHA
-	for _, change := range changes {
-		if change.Type == "deleted" {
-			treeEntries = append(treeEntries, GitTreeEntry{
-				Path: change.Path,
-				Mode: "100644",
-				Type: "blob",
-				SHA:  "", // Empty SHA means delete
-			})
-		}
-	}
+	// NOTE: When using base_tree for delta uploads, deletions are handled automatically
+	// by GitHub. Files not included in the tree array are deleted from the base tree.
+	// Therefore, we do NOT need to (and should not) include deletion entries here.
+	// If we were doing a full tree creation without base_tree, we would need to handle
+	// deletions differently (by omitting them entirely from the tree).
 
 	return treeEntries, nil
 }
