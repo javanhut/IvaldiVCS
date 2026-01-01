@@ -563,8 +563,15 @@ func getGitConfig(key string) string {
 }
 
 func getGitCredential(host string) string {
-	cmd := exec.Command("git", "credential", "fill")
+	// Use a context with timeout to prevent hanging on interactive prompts
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "credential", "fill")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("protocol=https\nhost=%s\n\n", host))
+
+	// Prevent any terminal interaction by setting these
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	output, err := cmd.Output()
 	if err != nil {

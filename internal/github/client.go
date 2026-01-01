@@ -184,7 +184,7 @@ type UpdateRefRequest struct {
 	Force bool   `json:"force,omitempty"`
 }
 
-// NewClient creates a new GitHub API client
+// NewClient creates a new GitHub API client (requires authentication)
 func NewClient() (*Client, error) {
 	// Try to get authentication from various sources
 	token, tokenType := getAuthToken()
@@ -211,6 +211,32 @@ func NewClient() (*Client, error) {
 		username:    username,
 		rateLimiter: &RateLimiter{},
 	}, nil
+}
+
+// NewClientOptionalAuth creates a GitHub API client with optional authentication
+// This allows downloading public repositories without logging in
+// Note: Unauthenticated requests have lower rate limits (60 requests/hour)
+func NewClientOptionalAuth() *Client {
+	// Try to get authentication from various sources
+	token, tokenType := getAuthToken()
+	username := getUsername()
+
+	// Create client even without authentication (works for public repos)
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		baseURL:     GitHubAPIURL,
+		token:       token,
+		tokenType:   tokenType,
+		username:    username,
+		rateLimiter: &RateLimiter{},
+	}
+}
+
+// IsAuthenticated returns true if the client has authentication configured
+func (c *Client) IsAuthenticated() bool {
+	return c.token != ""
 }
 
 // getAuthToken attempts to get GitHub auth token from various sources
@@ -281,7 +307,11 @@ func getGitConfig(key string) string {
 
 // getGitCredential uses git credential helper to get credentials
 func getGitCredential(host string) string {
-	cmd := exec.Command("git", "credential", "fill")
+	// Use a context with timeout to prevent hanging on interactive prompts
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "credential", "fill")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("protocol=https\nhost=%s\n\n", host))
 
 	// Disable interactive prompts to prevent user from being prompted
@@ -645,6 +675,41 @@ func (c *Client) WaitForRateLimit() {
 		fmt.Printf("Rate limited. Waiting %v until reset...\n", waitTime)
 		time.Sleep(waitTime)
 	}
+}
+
+// DownloadArchive downloads a repository archive (tarball) without using the API
+// This does NOT count against API rate limits
+func (c *Client) DownloadArchive(ctx context.Context, owner, repo, ref string) ([]byte, error) {
+	// Use codeload.github.com which doesn't count against API rate limits
+	archiveURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/%s", owner, repo, ref)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", archiveURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create archive request: %w", err)
+	}
+
+	// Add authorization for private repos
+	if c.token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download archive: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("archive download failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read archive data: %w", err)
+	}
+
+	return data, nil
 }
 
 // FileUploadRequest represents a request to upload/update a file

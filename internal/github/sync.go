@@ -1,14 +1,18 @@
 package github
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
@@ -29,7 +33,7 @@ type RepoSyncer struct {
 	casStore  cas.CAS
 }
 
-// NewRepoSyncer creates a new repository syncer
+// NewRepoSyncer creates a new repository syncer (requires authentication for push operations)
 func NewRepoSyncer(ivaldiDir, workDir string) (*RepoSyncer, error) {
 	client, err := NewClient()
 	if err != nil {
@@ -51,11 +55,63 @@ func NewRepoSyncer(ivaldiDir, workDir string) (*RepoSyncer, error) {
 	}, nil
 }
 
+// NewRepoSyncerForClone creates a repository syncer for cloning/downloading
+// Authentication is optional - works for public repos without login
+func NewRepoSyncerForClone(ivaldiDir, workDir string) (*RepoSyncer, error) {
+	// Use optional auth - allows downloading public repos without login
+	client := NewClientOptionalAuth()
+
+	// Initialize CAS store
+	objectsDir := filepath.Join(ivaldiDir, "objects")
+	casStore, err := cas.NewFileCAS(objectsDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize CAS: %w", err)
+	}
+
+	return &RepoSyncer{
+		client:    client,
+		ivaldiDir: ivaldiDir,
+		workDir:   workDir,
+		casStore:  casStore,
+	}, nil
+}
+
 // CloneRepository clones a GitHub repository without using Git
 func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, depth int, skipHistory bool, includeTags bool) error {
 	fmt.Printf("Cloning %s/%s from GitHub...\n", owner, repo)
 
-	// Check rate limits
+	// If skip-history is set, try to download archive directly without API calls
+	// This avoids rate limits entirely for public repos
+	if skipHistory {
+		fmt.Println("Downloading latest snapshot (no API calls)...")
+
+		// Try common default branch names directly with archive download
+		var lastErr error
+		for _, branchName := range []string{"main", "master"} {
+			fileCount, err := rs.downloadAndExtractArchive(ctx, owner, repo, branchName)
+			if err == nil {
+				fmt.Printf("Extracted %d files from archive (branch: %s)\n", fileCount, branchName)
+
+				// Create initial commit in Ivaldi
+				err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo))
+				if err != nil {
+					return fmt.Errorf("failed to create Ivaldi commit: %w", err)
+				}
+
+				fmt.Printf("Successfully cloned snapshot from %s/%s\n", owner, repo)
+				return nil
+			}
+			lastErr = err
+		}
+
+		// If all branch names failed, show the error and don't fall back to API
+		// (since API is likely also rate limited or repo doesn't exist)
+		if lastErr != nil {
+			return fmt.Errorf("failed to download repository: %w\n\nNote: This could mean:\n  - The repository doesn't exist or is private\n  - Check the repository name for typos\n  - If private, run 'ivaldi auth login' first", lastErr)
+		}
+	}
+
+	// Check rate limits before API calls
 	rs.client.WaitForRateLimit()
 
 	// Get repository info
@@ -127,16 +183,25 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 
 // cloneSnapshot downloads only the latest snapshot without history (backward compatibility)
 func (rs *RepoSyncer) cloneSnapshot(ctx context.Context, owner, repo, commitSHA, branchName string) error {
-	// Get the tree for the latest commit
-	tree, err := rs.client.GetTree(ctx, owner, repo, commitSHA, true)
+	// Use archive download (no rate limits) instead of individual file downloads
+	fileCount, err := rs.downloadAndExtractArchive(ctx, owner, repo, commitSHA)
 	if err != nil {
-		return fmt.Errorf("failed to get repository tree: %w", err)
-	}
+		// Fallback to individual file downloads if archive fails
+		fmt.Printf("Archive download failed (%v), falling back to API...\n", err)
 
-	// Download files concurrently
-	err = rs.downloadFiles(ctx, owner, repo, tree, commitSHA)
-	if err != nil {
-		return fmt.Errorf("failed to download files: %w", err)
+		// Get the tree for the latest commit
+		tree, err := rs.client.GetTree(ctx, owner, repo, commitSHA, true)
+		if err != nil {
+			return fmt.Errorf("failed to get repository tree: %w", err)
+		}
+
+		// Download files concurrently
+		err = rs.downloadFiles(ctx, owner, repo, tree, commitSHA)
+		if err != nil {
+			return fmt.Errorf("failed to download files: %w", err)
+		}
+	} else {
+		fmt.Printf("Extracted %d files from archive\n", fileCount)
 	}
 
 	// Create single initial commit in Ivaldi
@@ -726,17 +791,23 @@ func (rs *RepoSyncer) PullChanges(ctx context.Context, owner, repo, branch strin
 		return fmt.Errorf("failed to get branch info: %w", err)
 	}
 
-	// TODO: Compare with local state and download only changed files
-	// For now, we'll download the entire tree
-	tree, err := rs.client.GetTree(ctx, owner, repo, branchInfo.Commit.SHA, true)
+	// Use archive download (no rate limits) instead of individual file downloads
+	fileCount, err := rs.downloadAndExtractArchive(ctx, owner, repo, branchInfo.Commit.SHA)
 	if err != nil {
-		return fmt.Errorf("failed to get tree: %w", err)
-	}
+		// Fallback to individual file downloads if archive fails
+		fmt.Printf("Archive download failed (%v), falling back to API...\n", err)
 
-	// Download changed files
-	err = rs.downloadFiles(ctx, owner, repo, tree, branchInfo.Commit.SHA)
-	if err != nil {
-		return fmt.Errorf("failed to download files: %w", err)
+		tree, err := rs.client.GetTree(ctx, owner, repo, branchInfo.Commit.SHA, true)
+		if err != nil {
+			return fmt.Errorf("failed to get tree: %w", err)
+		}
+
+		err = rs.downloadFiles(ctx, owner, repo, tree, branchInfo.Commit.SHA)
+		if err != nil {
+			return fmt.Errorf("failed to download files: %w", err)
+		}
+	} else {
+		fmt.Printf("Extracted %d files from archive\n", fileCount)
 	}
 
 	// Create new commit
@@ -1519,13 +1590,7 @@ func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineNa
 		return fmt.Errorf("failed to get branch info: %w", err)
 	}
 
-	// Get the tree for this branch
-	tree, err := rs.client.GetTree(ctx, owner, repo, branchInfo.Commit.SHA, true)
-	if err != nil {
-		return fmt.Errorf("failed to get tree: %w", err)
-	}
-
-	fmt.Printf("Branch SHA: %s, Total files: %d\n", branchInfo.Commit.SHA[:7], len(tree.Tree))
+	fmt.Printf("Branch SHA: %s\n", branchInfo.Commit.SHA[:7])
 
 	// TEMPORARY SOLUTION: Create a temporary workspace for this timeline
 	// In the future, we should implement proper timeline isolation
@@ -1541,11 +1606,26 @@ func (rs *RepoSyncer) FetchTimeline(ctx context.Context, owner, repo, timelineNa
 	// Temporarily change workspace to temp directory
 	rs.workDir = tempDir
 
-	// Download all files for this timeline to temp directory
-	err = rs.downloadFiles(ctx, owner, repo, tree, branchInfo.Commit.SHA)
+	// Use archive download (no rate limits) instead of individual file downloads
+	fileCount, err := rs.downloadAndExtractArchive(ctx, owner, repo, branchInfo.Commit.SHA)
 	if err != nil {
-		rs.workDir = originalWorkDir // Restore original workspace
-		return fmt.Errorf("failed to download files: %w", err)
+		// Fallback to individual file downloads if archive fails
+		fmt.Printf("Archive download failed (%v), falling back to API...\n", err)
+
+		// Get the tree for this branch
+		tree, err := rs.client.GetTree(ctx, owner, repo, branchInfo.Commit.SHA, true)
+		if err != nil {
+			rs.workDir = originalWorkDir
+			return fmt.Errorf("failed to get tree: %w", err)
+		}
+
+		err = rs.downloadFiles(ctx, owner, repo, tree, branchInfo.Commit.SHA)
+		if err != nil {
+			rs.workDir = originalWorkDir // Restore original workspace
+			return fmt.Errorf("failed to download files: %w", err)
+		}
+	} else {
+		fmt.Printf("Extracted %d files from archive\n", fileCount)
 	}
 
 	// Create workspace index from temp directory
@@ -1659,4 +1739,109 @@ func computeGitBlobSHA(content []byte) string {
 	fullContent := append([]byte(header), content...)
 	hash := sha1.Sum(fullContent)
 	return hex.EncodeToString(hash[:])
+}
+
+// extractTarGz extracts a tar.gz archive to the specified destination directory
+// It strips the top-level directory that GitHub adds (e.g., "repo-main/")
+func extractTarGz(archiveData []byte, destDir string) (int, error) {
+	gzReader, err := gzip.NewReader(bytes.NewReader(archiveData))
+	if err != nil {
+		return 0, fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+	fileCount := 0
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fileCount, fmt.Errorf("failed to read tar entry: %w", err)
+		}
+
+		// GitHub archives have a top-level directory like "repo-branch/"
+		// Always strip the first path component
+		name := header.Name
+
+		// Find the first slash and strip everything before it (including the slash)
+		slashIdx := strings.Index(name, "/")
+		if slashIdx >= 0 {
+			name = name[slashIdx+1:]
+		} else {
+			// Entry has no slash - it's the top-level dir name itself, skip it
+			continue
+		}
+
+		// Skip empty names (this happens for the top-level directory entry)
+		if name == "" {
+			continue
+		}
+
+		targetPath := filepath.Join(destDir, name)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+				return fileCount, fmt.Errorf("failed to create directory %s: %w", targetPath, err)
+			}
+
+		case tar.TypeReg:
+			// Ensure parent directory exists
+			parentDir := filepath.Dir(targetPath)
+			if err := os.MkdirAll(parentDir, 0755); err != nil {
+				return fileCount, fmt.Errorf("failed to create parent directory: %w", err)
+			}
+
+			// Create the file
+			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			if err != nil {
+				return fileCount, fmt.Errorf("failed to create file %s: %w", targetPath, err)
+			}
+
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return fileCount, fmt.Errorf("failed to write file %s: %w", targetPath, err)
+			}
+			outFile.Close()
+			fileCount++
+
+		case tar.TypeSymlink:
+			// Handle symlinks
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fileCount, fmt.Errorf("failed to create parent directory for symlink: %w", err)
+			}
+			// Remove existing file/symlink if it exists
+			os.Remove(targetPath)
+			if err := os.Symlink(header.Linkname, targetPath); err != nil {
+				// Symlink creation might fail on some systems, continue without error
+				continue
+			}
+			fileCount++
+		}
+	}
+
+	return fileCount, nil
+}
+
+// downloadAndExtractArchive downloads a repository archive and extracts it to the workspace
+// This method does NOT use the GitHub API and therefore has no rate limits
+func (rs *RepoSyncer) downloadAndExtractArchive(ctx context.Context, owner, repo, ref string) (int, error) {
+	fmt.Printf("Downloading archive from codeload.github.com (no rate limit)...\n")
+
+	archiveData, err := rs.client.DownloadArchive(ctx, owner, repo, ref)
+	if err != nil {
+		return 0, fmt.Errorf("failed to download archive: %w", err)
+	}
+
+	fmt.Printf("Downloaded %.2f MB, extracting...\n", float64(len(archiveData))/(1024*1024))
+
+	fileCount, err := extractTarGz(archiveData, rs.workDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to extract archive: %w", err)
+	}
+
+	return fileCount, nil
 }

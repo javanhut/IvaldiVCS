@@ -132,24 +132,51 @@ func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory b
 		targetDir = args[1]
 	}
 
+	// Save original directory for cleanup on failure
+	originalDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	// Track if we created the directory (for cleanup)
+	createdDir := false
+
+	// Cleanup function to remove directory on failure
+	cleanup := func() {
+		if createdDir {
+			// Change back to original directory first
+			os.Chdir(originalDir)
+			// Remove the target directory
+			if err := os.RemoveAll(filepath.Join(originalDir, targetDir)); err != nil {
+				log.Printf("Warning: Failed to cleanup directory '%s': %v", targetDir, err)
+			} else {
+				log.Printf("Cleaned up incomplete download directory: %s", targetDir)
+			}
+		}
+	}
+
 	// Create target directory
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
+	createdDir = true
 
 	// Change to target directory
 	if err := os.Chdir(targetDir); err != nil {
+		cleanup()
 		return fmt.Errorf("failed to change directory: %w", err)
 	}
 
 	workDir, err := os.Getwd()
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
 	// Initialize Ivaldi repository
 	ivaldiDir := ".ivaldi"
 	if err := os.Mkdir(ivaldiDir, os.ModePerm); err != nil && !os.IsNotExist(err) {
+		cleanup()
 		return fmt.Errorf("failed to create .ivaldi directory: %w", err)
 	}
 
@@ -158,6 +185,7 @@ func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory b
 	// Initialize refs system
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to initialize refs: %w", err)
 	}
 	defer refsManager.Close()
@@ -188,9 +216,10 @@ func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory b
 		fmt.Printf("Configured repository for GitHub: %s/%s\n", owner, repo)
 	}
 
-	// Create syncer and clone
-	syncer, err := github.NewRepoSyncer(ivaldiDir, workDir)
+	// Create syncer for cloning (uses optional auth - works for public repos without login)
+	syncer, err := github.NewRepoSyncerForClone(ivaldiDir, workDir)
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to create syncer: %w", err)
 	}
 
@@ -199,6 +228,7 @@ func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory b
 
 	fmt.Printf("Downloading from GitHub: %s/%s...\n", owner, repo)
 	if err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags); err != nil {
+		cleanup()
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 
@@ -321,24 +351,49 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string, depth in
 		targetDir = args[1]
 	}
 
+	// Save original directory for cleanup on failure
+	originalDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	// Track if we created the directory (for cleanup)
+	createdDir := false
+
+	// Cleanup function to remove directory on failure
+	cleanup := func() {
+		if createdDir {
+			os.Chdir(originalDir)
+			if err := os.RemoveAll(filepath.Join(originalDir, targetDir)); err != nil {
+				log.Printf("Warning: Failed to cleanup directory '%s': %v", targetDir, err)
+			} else {
+				log.Printf("Cleaned up incomplete download directory: %s", targetDir)
+			}
+		}
+	}
+
 	// Create target directory
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
+	createdDir = true
 
 	// Change to target directory
 	if err := os.Chdir(targetDir); err != nil {
+		cleanup()
 		return fmt.Errorf("failed to change directory: %w", err)
 	}
 
 	workDir, err := os.Getwd()
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
 	// Initialize Ivaldi repository
 	ivaldiDir := ".ivaldi"
 	if err := os.Mkdir(ivaldiDir, os.ModePerm); err != nil && !os.IsNotExist(err) {
+		cleanup()
 		return fmt.Errorf("failed to create .ivaldi directory: %w", err)
 	}
 
@@ -347,6 +402,7 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string, depth in
 	// Initialize refs system
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to initialize refs: %w", err)
 	}
 	defer refsManager.Close()
@@ -393,6 +449,7 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string, depth in
 		syncer, err = gitlab.NewRepoSyncer(ivaldiDir, workDir, owner, repo)
 	}
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to create syncer: %w", err)
 	}
 
@@ -405,6 +462,7 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string, depth in
 		fmt.Printf("Downloading from GitLab: %s/%s...\n", owner, repo)
 	}
 	if err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags); err != nil {
+		cleanup()
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 
@@ -420,24 +478,49 @@ func handleGenericGitDownload(rawURL string, args []string, depth int, skipHisto
 		targetDir = args[1]
 	}
 
+	// Save original directory for cleanup on failure
+	originalDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	// Track if we created the directory (for cleanup)
+	createdDir := false
+
+	// Cleanup function to remove directory on failure
+	cleanup := func() {
+		if createdDir {
+			os.Chdir(originalDir)
+			if err := os.RemoveAll(filepath.Join(originalDir, targetDir)); err != nil {
+				log.Printf("Warning: Failed to cleanup directory '%s': %v", targetDir, err)
+			} else {
+				log.Printf("Cleaned up incomplete download directory: %s", targetDir)
+			}
+		}
+	}
+
 	// Create target directory
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
+	createdDir = true
 
 	// Change to target directory
 	if err := os.Chdir(targetDir); err != nil {
+		cleanup()
 		return fmt.Errorf("failed to change directory: %w", err)
 	}
 
 	workDir, err := os.Getwd()
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
 	// Initialize Ivaldi repository
 	ivaldiDir := ".ivaldi"
 	if err := os.Mkdir(ivaldiDir, os.ModePerm); err != nil && !os.IsExist(err) {
+		cleanup()
 		return fmt.Errorf("failed to create .ivaldi directory: %w", err)
 	}
 
@@ -446,6 +529,7 @@ func handleGenericGitDownload(rawURL string, args []string, depth int, skipHisto
 	// Initialize refs system
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to initialize refs: %w", err)
 	}
 	defer refsManager.Close()
@@ -472,6 +556,7 @@ func handleGenericGitDownload(rawURL string, args []string, depth int, skipHisto
 	// Create cloner
 	cloner, err := gitclone.NewCloner(ivaldiDir, workDir)
 	if err != nil {
+		cleanup()
 		return fmt.Errorf("failed to create cloner: %w", err)
 	}
 
@@ -493,6 +578,7 @@ func handleGenericGitDownload(rawURL string, args []string, depth int, skipHisto
 	}
 
 	if err := cloner.Clone(ctx, cloneOpts); err != nil {
+		cleanup()
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 
@@ -645,19 +731,26 @@ var downloadCmd = &cobra.Command{
 	Use:     "download <url> [directory]",
 	Aliases: []string{"clone"},
 	Short:   "Download/clone repository from remote",
-	Long:    `Downloads a complete repository from a remote URL into a new directory. Supports GitHub, GitLab, and generic Git repositories.`,
-	Args:    cobra.MinimumNArgs(1),
+	Long: `Downloads a repository from a remote URL into a new directory.
+Supports GitHub, GitLab, and generic Git repositories.
+
+By default, downloads only the latest snapshot (no commit history).
+Use --with-history to download full commit history (requires API, subject to rate limits).`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := args[0]
 		gitlabFlag, _ := cmd.Flags().GetBool("gitlab")
 		customURL, _ := cmd.Flags().GetString("url")
 		depth, _ := cmd.Flags().GetInt("depth")
-		skipHistory, _ := cmd.Flags().GetBool("skip-history")
+		withHistory, _ := cmd.Flags().GetBool("with-history")
 		includeTags, _ := cmd.Flags().GetBool("include-tags")
 		username, _ := cmd.Flags().GetString("username")
 		password, _ := cmd.Flags().GetString("password")
 		token, _ := cmd.Flags().GetString("token")
 		sshKey, _ := cmd.Flags().GetString("ssh-key")
+
+		// Invert: skipHistory is true when withHistory is false (default behavior is snapshot only)
+		skipHistory := !withHistory
 
 		// Check --gitlab flag for explicit GitLab handling
 		if gitlabFlag {
@@ -1195,9 +1288,9 @@ func init() {
 	downloadCmd.Flags().BoolVar(&recurseSubmodules, "recurse-submodules", true, "Automatically clone and convert Git submodules (default: true)")
 	downloadCmd.Flags().Bool("gitlab", false, "Download from GitLab instead of GitHub")
 	downloadCmd.Flags().String("url", "", "Custom GitLab instance URL (e.g., gitlab.javanstormbreaker.com)")
-	downloadCmd.Flags().Int("depth", 0, "Limit commit history depth (0 for full history)")
-	downloadCmd.Flags().Bool("skip-history", false, "Skip commit history migration, download only latest snapshot")
-	downloadCmd.Flags().Bool("include-tags", false, "Include tags and releases in the import")
+	downloadCmd.Flags().Int("depth", 0, "Limit commit history depth when using --with-history (0 for full history)")
+	downloadCmd.Flags().Bool("with-history", false, "Download full commit history (requires API calls, subject to rate limits)")
+	downloadCmd.Flags().Bool("include-tags", false, "Include tags and releases in the import (requires --with-history)")
 
 	// Generic Git authentication flags
 	downloadCmd.Flags().String("username", "", "Username for HTTP basic authentication")
