@@ -13,7 +13,6 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
 
     steps:
@@ -33,13 +32,9 @@ jobs:
           git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --pretty=format:"- %s (%h)" >> changelog.txt || echo "- Initial release" >> changelog.txt
 
       - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           body_path: changelog.txt
           draft: false
           prerelease: false
@@ -170,30 +165,17 @@ jobs:
         run: |
           tar -czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }} README.txt LICENSE
 
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./build/${{ matrix.asset_name }}.tar.gz
-          asset_name: ${{ matrix.asset_name }}.tar.gz
-          asset_content_type: application/gzip
-
       - name: Generate checksum
         working-directory: build
         run: |
           sha256sum ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
 
-      - name: Upload checksum
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./build/${{ matrix.asset_name }}.tar.gz.sha256
-          asset_name: ${{ matrix.asset_name }}.tar.gz.sha256
-          asset_content_type: text/plain
+          files: |
+            ./build/${{ matrix.asset_name }}.tar.gz
+            ./build/${{ matrix.asset_name }}.tar.gz.sha256
 
   create-checksums-file:
     name: Create Combined Checksums File
@@ -201,10 +183,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download all checksums
-        uses: actions/download-artifact@v3
-        continue-on-error: true
-
       - name: Create combined checksums file
         run: |
           echo "# SHA256 Checksums for Ivaldi VCS ${{ needs.create-release.outputs.version }}" > checksums.txt
@@ -213,11 +191,6 @@ jobs:
           echo "" >> checksums.txt
 
       - name: Upload combined checksums
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./checksums.txt
-          asset_name: checksums.txt
-          asset_content_type: text/plain
+          files: checksums.txt
