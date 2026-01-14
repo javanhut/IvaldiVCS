@@ -80,7 +80,18 @@ func (cb *CommitBuilder) CreateCommit(
 	parents []cas.Hash,
 	author, committer, message string,
 ) (*CommitObject, error) {
-	
+	now := time.Now()
+	return cb.CreateCommitWithTime(workspaceFiles, parents, author, committer, message, now, now)
+}
+
+// CreateCommitWithTime creates a new commit from workspace files with specified timestamps.
+func (cb *CommitBuilder) CreateCommitWithTime(
+	workspaceFiles []wsindex.FileMetadata,
+	parents []cas.Hash,
+	author, committer, message string,
+	authorTime, commitTime time.Time,
+) (*CommitObject, error) {
+
 	// Step 1: Build tree structure from workspace files
 	treeHash, err := cb.buildTreeFromWorkspace(workspaceFiles)
 	if err != nil {
@@ -88,14 +99,13 @@ func (cb *CommitBuilder) CreateCommit(
 	}
 
 	// Step 2: Create commit object
-	now := time.Now()
 	commit := &CommitObject{
 		TreeHash:   treeHash,
 		Parents:    parents,
 		Author:     author,
 		Committer:  committer,
-		AuthorTime: now,
-		CommitTime: now,
+		AuthorTime: authorTime,
+		CommitTime: commitTime,
 		Message:    message,
 	}
 
@@ -130,7 +140,7 @@ func (cb *CommitBuilder) CreateCommit(
 	// Step 4: Store commit object in CAS
 	commitData := cb.encodeCommit(commit)
 	commitHash := cas.SumB3(commitData)
-	
+
 	err = cb.CAS.Put(commitHash, commitData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store commit: %w", err)
@@ -318,6 +328,48 @@ func (cr *CommitReader) ReadCommit(commitHash cas.Hash) (*CommitObject, error) {
 	return cr.parseCommit(data)
 }
 
+// IsAncestor checks if ancestorHash is an ancestor of descendantHash.
+// Returns true if ancestorHash appears in the parent chain of descendantHash.
+// Uses breadth-first search to handle merge commits with multiple parents.
+// A commit is considered its own ancestor (returns true if hashes are equal).
+func (cr *CommitReader) IsAncestor(ancestorHash, descendantHash cas.Hash) (bool, error) {
+	// A commit is its own ancestor
+	if ancestorHash == descendantHash {
+		return true, nil
+	}
+
+	visited := make(map[cas.Hash]bool)
+	queue := []cas.Hash{descendantHash}
+	maxDepth := 10000 // Prevent infinite loops on corrupted data
+
+	for len(queue) > 0 && maxDepth > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		maxDepth--
+
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+
+		commit, err := cr.ReadCommit(current)
+		if err != nil {
+			continue // Skip unreadable commits
+		}
+
+		for _, parent := range commit.Parents {
+			if parent == ancestorHash {
+				return true, nil
+			}
+			if !visited[parent] {
+				queue = append(queue, parent)
+			}
+		}
+	}
+
+	return false, nil
+}
+
 // ReadTree reads the tree object for a commit.
 func (cr *CommitReader) ReadTree(commit *CommitObject) (*TreeObject, error) {
 	// Load the HAMT directory
@@ -477,6 +529,99 @@ func (cr *CommitReader) listFilesRecursive(tree *TreeObject, prefix string, file
 			}
 		}
 	}
+	return nil
+}
+
+// TreeToFileMetadata converts a tree object to workspace file metadata.
+// This is used for comparing commit states via the workspace index system.
+func (cr *CommitReader) TreeToFileMetadata(tree *TreeObject) ([]wsindex.FileMetadata, error) {
+	var files []wsindex.FileMetadata
+	err := cr.treeToMetadataRecursive(tree, "", &files)
+	return files, err
+}
+
+// treeToMetadataRecursive recursively converts tree entries to file metadata.
+func (cr *CommitReader) treeToMetadataRecursive(tree *TreeObject, prefix string, files *[]wsindex.FileMetadata) error {
+	hamtLoader := hamtdir.NewLoader(cr.CAS)
+
+	// Get the full entries from HAMT (which include FileRef details)
+	entries, err := hamtLoader.List(tree.DirRef)
+	if err != nil {
+		return fmt.Errorf("failed to list directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		fullPath := entry.Name
+		if prefix != "" {
+			fullPath = prefix + "/" + entry.Name
+		}
+
+		switch entry.Type {
+		case hamtdir.FileEntry:
+			if entry.File == nil {
+				continue // Skip entries without file reference
+			}
+
+			metadata := wsindex.FileMetadata{
+				Path:     fullPath,
+				FileRef:  *entry.File,
+				ModTime:  time.Time{}, // Trees don't store modification times
+				Mode:     0644,        // Default file mode
+				Size:     entry.File.Size,
+				Checksum: entry.File.Hash,
+			}
+			*files = append(*files, metadata)
+
+		case hamtdir.DirEntry:
+			if entry.Dir == nil {
+				continue // Skip entries without directory reference
+			}
+
+			// Load subdirectory and recurse
+			subEntries, err := hamtLoader.List(*entry.Dir)
+			if err != nil {
+				return fmt.Errorf("failed to read subdirectory %s: %w", entry.Name, err)
+			}
+
+			// Convert to TreeObject for recursive call
+			var subTreeEntries []TreeEntry
+			for _, subEntry := range subEntries {
+				var objType ObjectType
+				var hash cas.Hash
+
+				switch subEntry.Type {
+				case hamtdir.FileEntry:
+					objType = BlobObject
+					if subEntry.File != nil {
+						hash = subEntry.File.Hash
+					}
+				case hamtdir.DirEntry:
+					objType = TreeObject_Type
+					if subEntry.Dir != nil {
+						hash = subEntry.Dir.Hash
+					}
+				}
+
+				subTreeEntries = append(subTreeEntries, TreeEntry{
+					Mode: 0644,
+					Name: subEntry.Name,
+					Hash: hash,
+					Type: objType,
+				})
+			}
+
+			subTree := &TreeObject{
+				Entries: subTreeEntries,
+				DirRef:  *entry.Dir,
+			}
+
+			err = cr.treeToMetadataRecursive(subTree, fullPath, files)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -284,7 +284,7 @@ func selectCommitRangeForShift(casStore cas.CAS, refsManager *refs.RefsManager, 
 	fmt.Printf("\n%s Select START of commit range (oldest):\n\n",
 		colors.Bold("⏱"))
 
-	startSeal, err := selectSealWithArrowKeys(allSeals, timelineName, 0, len(allSeals))
+	startSeal, err := selectSealWithScrollWindow(allSeals, timelineName, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -306,10 +306,7 @@ func selectCommitRangeForShift(casStore cas.CAS, refsManager *refs.RefsManager, 
 	fmt.Printf("\n%s Select END of commit range (newest):\n\n",
 		colors.Bold("⏱"))
 
-	// Mark the start position
-	displaySealsWithMarker(filteredSeals, timelineName, startSeal.Hash)
-
-	endSeal, err := selectSealWithArrowKeys(filteredSeals, timelineName, 0, len(filteredSeals))
+	endSeal, err := selectSealWithScrollWindow(filteredSeals, timelineName, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -326,23 +323,3 @@ func selectCommitRangeForShift(casStore cas.CAS, refsManager *refs.RefsManager, 
 	return startSeal, endSeal, nil
 }
 
-// displaySealsWithMarker displays seals with a marker for the start commit
-func displaySealsWithMarker(seals []SealInfo, timelineName string, startHash [32]byte) {
-	fmt.Printf("\n%s Seals in timeline '%s':\n\n", colors.Bold("⏱"), colors.Bold(timelineName))
-
-	for i, seal := range seals {
-		var prefix string
-		if seal.Hash == startHash {
-			prefix = colors.Yellow("  [START] ")
-		} else if i == 0 {
-			prefix = colors.Dim("→ ")
-		} else {
-			prefix = "  "
-		}
-
-		sealHash := hex.EncodeToString(seal.Hash[:4])
-		fmt.Printf("%s%d. %s (%s)\n", prefix, i+1, colors.Cyan(seal.SealName), colors.Gray(sealHash))
-		fmt.Printf("     %s\n", seal.Message)
-		fmt.Printf("     %s • %s\n\n", seal.Author, seal.Timestamp)
-	}
-}

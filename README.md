@@ -24,6 +24,8 @@ https://github.com/user-attachments/assets/128a8407-c5e5-4115-a3cb-24c2f48a71dd
 - **Timeline-Based Branching**: Intuitive branch management with auto-shelving
 - **Butterfly Timelines**: Experimental sandboxes with bidirectional sync for safe development
 - **Interactive Commit Squashing**: Clean up history with arrow-key navigation before pushing
+- **Interactive Merge Resolution**: File-by-file conflict resolution with preview options
+- **Hash Prefix Support**: Reference commits with short hashes like `abc123`
 - **Modern Cryptography**: BLAKE3 hashing for security and performance
 - **Content-Addressable Storage**: Efficient deduplication and storage
 - **GitHub Integration**: Seamless clone, push, and pull operations
@@ -31,6 +33,7 @@ https://github.com/user-attachments/assets/128a8407-c5e5-4115-a3cb-24c2f48a71dd
 - **Submodule Support**: Automatic Git submodule detection, conversion, and dual-hash tracking
 - **Selective Sync**: Download only the branches you need
 - **Merkle Mountain Range**: Append-only commit history with cryptographic proofs
+- **Verbosity Control**: `--verbose` and `--quiet` flags for output control
 
 ## Quick Start
 

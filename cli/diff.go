@@ -409,15 +409,20 @@ func getCommitIndex(casStore cas.CAS, commitHash [32]byte) (wsindex.IndexRef, er
 		return wsindex.IndexRef{}, fmt.Errorf("failed to read commit: %w", err)
 	}
 
-	_, err = commitReader.ReadTree(commitObj)
+	tree, err := commitReader.ReadTree(commitObj)
 	if err != nil {
 		return wsindex.IndexRef{}, fmt.Errorf("failed to read tree: %w", err)
 	}
 
+	// Convert tree to file metadata
+	files, err := commitReader.TreeToFileMetadata(tree)
+	if err != nil {
+		return wsindex.IndexRef{}, fmt.Errorf("failed to convert tree to metadata: %w", err)
+	}
+
 	// Build workspace index from tree files
-	// This is a simplified version - in reality we'd need to properly convert tree entries to FileMetadata
 	wsBuilder := wsindex.NewBuilder(casStore)
-	return wsBuilder.Build(nil) // TODO: Convert tree to FileMetadata
+	return wsBuilder.Build(files)
 }
 
 // getCommitIndexByRef resolves a ref (seal name or hash) to a workspace index
@@ -434,7 +439,13 @@ func getCommitIndexByRef(casStore cas.CAS, ivaldiDir, ref string) (wsindex.Index
 		return getCommitIndex(casStore, commitHash)
 	}
 
-	// Try as short hash (TODO: implement hash prefix resolution)
+	// Try as hash prefix
+	commitHash, err = refsManager.ResolveHashPrefix(ref)
+	if err == nil {
+		return getCommitIndex(casStore, commitHash)
+	}
+
+	// Neither seal name nor valid hash prefix
 	return wsindex.IndexRef{}, fmt.Errorf("commit not found: %s", ref)
 }
 

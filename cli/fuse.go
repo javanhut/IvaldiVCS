@@ -168,7 +168,7 @@ func performFuse(ivaldiDir, workDir, sourceTimeline, targetTimeline string) erro
 	}
 
 	// Check for fast-forward possibility
-	canFastForward := checkFastForward(targetCommit, sourceCommit)
+	canFastForward := checkFastForward(casStore, targetHash, sourceHash)
 
 	if canFastForward {
 		return handleFastForward(ivaldiDir, refsManager, sourceTimeline, targetTimeline, sourceHash)
@@ -178,21 +178,16 @@ func performFuse(ivaldiDir, workDir, sourceTimeline, targetTimeline string) erro
 	return handleMerge(ivaldiDir, workDir, casStore, refsManager, sourceTimeline, targetTimeline, sourceCommit, targetCommit, sourceHash, targetHash)
 }
 
-func checkFastForward(targetCommit, sourceCommit *commit.CommitObject) bool {
+func checkFastForward(casStore cas.CAS, targetHash, sourceHash cas.Hash) bool {
 	// Fast-forward is possible if target is an ancestor of source
-	// For now, simple check: target has no commits after source's parent
-	// A proper implementation would walk the commit graph
+	commitReader := commit.NewCommitReader(casStore)
 
-	// If target is in source's parent chain, we can fast-forward
-	for _, parent := range sourceCommit.Parents {
-		// Simple check - if target is direct parent
-		// TODO: Walk full parent chain
-		if len(targetCommit.Parents) > 0 && parent == targetCommit.Parents[0] {
-			return true
-		}
+	isAncestor, err := commitReader.IsAncestor(targetHash, sourceHash)
+	if err != nil {
+		return false
 	}
 
-	return false
+	return isAncestor
 }
 
 func handleFastForward(ivaldiDir string, refsManager *refs.RefsManager, sourceTimeline, targetTimeline string, sourceHash cas.Hash) error {
@@ -620,28 +615,84 @@ func continueMerge(ivaldiDir, workDir string) error {
 		return fmt.Errorf("failed to load resolution: %w", err)
 	}
 
-	// If resolution exists and has conflicts, use interactive resolver
-	if resolution != nil && !resolution.IsFullyResolved() {
-		fmt.Println(colors.Cyan("Using interactive conflict resolver..."))
-		fmt.Println()
-
-		// TODO: Implement interactive resolution using the ConflictResolver
-		// For now, we'll require the user to use a strategy
-		fmt.Println(colors.Yellow("Interactive resolution not yet complete."))
-		fmt.Println("Please rerun fuse with a strategy:")
-		fmt.Printf("  %s - Accept source changes\n", colors.Blue("ivaldi fuse --strategy=theirs "+state.SourceTimeline))
-		fmt.Printf("  %s - Keep target changes\n", colors.Green("ivaldi fuse --strategy=ours "+state.SourceTimeline))
-		return fmt.Errorf("conflicts not resolved - use a strategy")
-	}
-
-	// Create merge commit
-	fmt.Println(colors.Cyan("Creating merge commit..."))
-
+	// Initialize CAS store (needed for interactive resolution)
 	objectsDir := filepath.Join(ivaldiDir, "objects")
 	casStore, err := cas.NewFileCAS(objectsDir)
 	if err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
+
+	// If resolution exists and has conflicts, use interactive resolver
+	if resolution != nil && !resolution.IsFullyResolved() {
+		fmt.Println(colors.Cyan("Using interactive conflict resolver..."))
+		fmt.Println()
+
+		// Get conflict file paths
+		conflictListPath := filepath.Join(ivaldiDir, "MERGE_CONFLICTS")
+		conflictData, err := os.ReadFile(conflictListPath)
+		if err != nil {
+			return fmt.Errorf("failed to read conflict list: %w", err)
+		}
+		conflictPaths := strings.Split(strings.TrimSpace(string(conflictData)), "\n")
+
+		// Load commits for three-way merge data
+		commitReader := commit.NewCommitReader(casStore)
+		targetCommit, err := commitReader.ReadCommit(state.TargetHash)
+		if err != nil {
+			return fmt.Errorf("failed to read target commit: %w", err)
+		}
+		sourceCommit, err := commitReader.ReadCommit(state.SourceHash)
+		if err != nil {
+			return fmt.Errorf("failed to read source commit: %w", err)
+		}
+		var baseCommit *commit.CommitObject
+		if len(targetCommit.Parents) > 0 {
+			baseCommit, _ = commitReader.ReadCommit(targetCommit.Parents[0])
+		}
+
+		// Resolve each conflicting file interactively
+		resolvedFiles := []string{}
+		for _, path := range conflictPaths {
+			if path == "" {
+				continue
+			}
+
+			result, err := resolveConflictedFile(casStore, ivaldiDir, workDir, path, baseCommit, targetCommit, sourceCommit)
+			if err != nil {
+				return fmt.Errorf("failed to resolve %s: %w", path, err)
+			}
+
+			// Update resolution status
+			if resolution.Files[path] != nil {
+				resolution.Files[path].Resolved = result.Success
+			}
+			resolvedFiles = append(resolvedFiles, path)
+		}
+
+		// Save updated resolution
+		if err := resStorage.Save(resolution); err != nil {
+			return fmt.Errorf("failed to save resolution: %w", err)
+		}
+
+		// Auto-stage resolved files
+		stageDir := filepath.Join(ivaldiDir, "stage")
+		if err := os.MkdirAll(stageDir, 0755); err != nil {
+			return fmt.Errorf("failed to create stage directory: %w", err)
+		}
+		stageFilePath := filepath.Join(stageDir, "files")
+		if err := os.WriteFile(stageFilePath, []byte(strings.Join(resolvedFiles, "\n")), 0644); err != nil {
+			return fmt.Errorf("failed to stage files: %w", err)
+		}
+
+		fmt.Printf("\n%s All conflicts resolved!\n", colors.SuccessText("[OK]"))
+		fmt.Printf("  %d file(s) resolved and staged\n", len(resolvedFiles))
+		fmt.Println()
+		fmt.Println("Run 'ivaldi fuse --continue' again to complete the merge.")
+		return nil
+	}
+
+	// Create merge commit
+	fmt.Println(colors.Cyan("Creating merge commit..."))
 
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
@@ -750,6 +801,120 @@ func continueMerge(ivaldiDir, workDir string) error {
 	fmt.Printf("%s Merge completed successfully!\n", colors.SuccessText("[OK]"))
 	fmt.Printf("  Merge seal: %s\n", colors.Cyan(sealName))
 	fmt.Printf("  Timeline %s updated\n", colors.Bold(state.TargetTimeline))
+
+	return nil
+}
+
+// getFileFromCommit retrieves file metadata from a commit's tree.
+// Returns nil if the file doesn't exist in the commit.
+func getFileFromCommit(casStore cas.CAS, commitObj *commit.CommitObject, path string) *wsindex.FileMetadata {
+	if commitObj == nil {
+		return nil
+	}
+
+	commitReader := commit.NewCommitReader(casStore)
+	tree, err := commitReader.ReadTree(commitObj)
+	if err != nil {
+		return nil
+	}
+
+	// Convert tree to file metadata and search for the path
+	files, err := commitReader.TreeToFileMetadata(tree)
+	if err != nil {
+		return nil
+	}
+
+	for i := range files {
+		if files[i].Path == path {
+			return &files[i]
+		}
+	}
+
+	return nil
+}
+
+// resolveConflictedFile performs interactive resolution for a single conflicting file.
+// It recreates the chunk-level merge data and uses ConflictResolver to get user choices.
+func resolveConflictedFile(
+	casStore cas.CAS,
+	ivaldiDir string,
+	workDir string,
+	path string,
+	baseCommit, targetCommit, sourceCommit *commit.CommitObject,
+) (*diffmerge.ChunkMergeResult, error) {
+	// Get file metadata from each commit
+	baseFile := getFileFromCommit(casStore, baseCommit, path)
+	targetFile := getFileFromCommit(casStore, targetCommit, path)
+	sourceFile := getFileFromCommit(casStore, sourceCommit, path)
+
+	// Use ChunkMerger to recreate the conflict data
+	chunkMerger := diffmerge.NewChunkMerger(casStore)
+	result, err := chunkMerger.MergeFile(path, baseFile, targetFile, sourceFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to merge file %s: %w", path, err)
+	}
+
+	// If no conflicts, file is already resolved
+	if result.Success {
+		// Write the merged file to workspace
+		if len(result.MergedChunks) > 0 {
+			err = writeMergedFile(casStore, workDir, path, result.MergedChunks)
+			if err != nil {
+				return nil, fmt.Errorf("failed to write merged file: %w", err)
+			}
+		}
+		return result, nil
+	}
+
+	// Use ConflictResolver for interactive resolution
+	resolver := NewConflictResolver(casStore)
+	resolvedChunks, err := resolver.ResolveConflicts(result)
+	if err != nil {
+		return nil, fmt.Errorf("conflict resolution failed: %w", err)
+	}
+
+	// Update result with resolved chunks
+	result.MergedChunks = resolvedChunks
+	result.Success = true
+	result.Conflicts = nil
+
+	// Write the resolved file to workspace
+	if len(resolvedChunks) > 0 {
+		err = writeMergedFile(casStore, workDir, path, resolvedChunks)
+		if err != nil {
+			return nil, fmt.Errorf("failed to write resolved file: %w", err)
+		}
+	}
+
+	return result, nil
+}
+
+// writeMergedFile writes merged chunks to the workspace.
+func writeMergedFile(casStore cas.CAS, workDir string, path string, chunks []cas.Hash) error {
+	filePath := filepath.Join(workDir, path)
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Create file
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	// Write each chunk
+	for _, chunkHash := range chunks {
+		data, err := casStore.Get(chunkHash)
+		if err != nil {
+			return fmt.Errorf("failed to read chunk %s: %w", chunkHash.String()[:8], err)
+		}
+		if _, err := file.Write(data); err != nil {
+			return fmt.Errorf("failed to write chunk: %w", err)
+		}
+	}
 
 	return nil
 }

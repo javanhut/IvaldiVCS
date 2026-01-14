@@ -4,7 +4,18 @@ Manage GitHub authentication for Ivaldi VCS using OAuth.
 
 ## Overview
 
-The `auth` command provides a secure way to authenticate with GitHub using OAuth device flow. This eliminates the need to manually create and manage personal access tokens.
+The `auth` command provides a secure way to authenticate with GitHub using OAuth device flow. This works exactly like `gh auth login` from the GitHub CLI, providing seamless access to all your repositories without needing to manually create and manage personal access tokens.
+
+**Ivaldi uses the same OAuth App as GitHub CLI**, so authentication works immediately without any setup required.
+
+## Quick Start
+
+Simply run:
+```bash
+ivaldi auth login
+```
+
+That's it! No configuration needed.
 
 ## Subcommands
 
@@ -164,7 +175,13 @@ This helps you understand which credentials Ivaldi is using and troubleshoot aut
 - OAuth tokens are stored with restricted permissions (0600) in `~/.config/ivaldi/auth.json`
 - Only you (the file owner) can read the token file
 - Tokens are requested with minimal required scopes: `repo`, `read:user`, `user:email`
-- You can revoke access at any time through GitHub settings or by running `ivaldi auth logout`
+- You can revoke access at any time through:
+  - GitHub settings: https://github.com/settings/applications (look for "GitHub CLI")
+  - Running `ivaldi auth logout`
+- You can override scopes via `IVALDI_GITHUB_SCOPES` environment variable (default is sufficient for most users)
+- Ivaldi uses GitHub CLI's public OAuth App, which is trusted and widely used
+- OAuth App Client IDs are public (not secret) and safe to share
+- Your personal access token is unique to you and stored securely
 
 ## Token Scopes
 
@@ -173,6 +190,18 @@ The OAuth token requests the following scopes:
 - **repo**: Full control of private repositories (required for clone, push, pull operations)
 - **read:user**: Read user profile information
 - **user:email**: Read user email addresses
+
+## Advanced: Using Your Own OAuth App
+
+By default, Ivaldi uses GitHub CLI's public OAuth App. If you prefer to use your own:
+
+1. Create a GitHub OAuth App at: https://github.com/settings/developers
+2. Click "New OAuth App" (NOT "New GitHub App")
+3. Enable "Device Flow" in the OAuth App settings
+4. Copy the Client ID
+5. Set environment variable: `export IVALDI_GITHUB_CLIENT_ID=your_client_id_here`
+
+**Note:** GitHub Apps (Client IDs starting with `Iv1.`) will NOT work. You must use an OAuth App.
 
 ## Troubleshooting
 
@@ -194,9 +223,10 @@ ivaldi auth login
 ### Permission denied errors
 
 If you get permission errors when accessing repositories:
-1. Ensure the repository exists and you have access
+1. Ensure the repository exists and you have access to it on GitHub
 2. Check your authentication: `ivaldi auth status`
 3. Try re-authenticating: `ivaldi auth login`
+4. If you've overridden the OAuth App with `IVALDI_GITHUB_CLIENT_ID`, make sure it's an OAuth App (not a GitHub App)
 
 ### Browser not available
 
@@ -225,15 +255,18 @@ You can copy the verification URL and code to any device with a browser, authent
 
 ### vs. GitHub CLI (gh)
 
-Ivaldi's OAuth implementation is similar to GitHub CLI's authentication:
+Ivaldi's OAuth implementation is nearly identical to GitHub CLI's authentication:
+- Both use the **same OAuth App** by default (GitHub CLI's public OAuth App)
 - Both use OAuth device flow
 - Both store tokens securely
 - Both provide easy login/logout
+- Both provide full user-level access to repositories
 
-**Difference:**
+**Differences:**
 - Ivaldi stores tokens in `~/.config/ivaldi/auth.json`
 - GitHub CLI stores tokens in `~/.config/gh/hosts.yml`
-- Ivaldi can also read from GitHub CLI config as a fallback
+- Tokens are separate - logging into one doesn't log you into the other
+- Ivaldi can read from GitHub CLI config as a fallback if you haven't run `ivaldi auth login`
 
 ## See Also
 

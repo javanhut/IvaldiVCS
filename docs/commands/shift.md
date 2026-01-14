@@ -197,7 +197,7 @@ This is a destructive operation that:
 
 💡 Tip: Consider creating a backup branch first:
   ivaldi timeline create backup-before-force-push
-  ivaldi upload github:owner/repo backup-before-force-push
+  ivaldi upload backup-before-force-push
 
 Type 'force push' to confirm: force push
 

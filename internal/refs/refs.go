@@ -258,6 +258,61 @@ func (rm *RefsManager) RemoveGitHubRepository() error {
 	return rm.db.RemoveConfig("github.repository")
 }
 
+// SetGitLabRepository stores the GitLab repository configuration
+func (rm *RefsManager) SetGitLabRepository(owner, repo string) error {
+	repoURL := fmt.Sprintf("%s/%s", owner, repo)
+	return rm.db.PutConfig("gitlab.repository", repoURL)
+}
+
+// SetGitLabRepositoryWithURL stores the GitLab repository configuration with a custom URL
+func (rm *RefsManager) SetGitLabRepositoryWithURL(owner, repo, baseURL string) error {
+	repoURL := fmt.Sprintf("%s/%s", owner, repo)
+	if err := rm.db.PutConfig("gitlab.repository", repoURL); err != nil {
+		return err
+	}
+	if baseURL != "" {
+		return rm.db.PutConfig("gitlab.url", baseURL)
+	}
+	return nil
+}
+
+// GetGitLabRepository retrieves the GitLab repository configuration
+func (rm *RefsManager) GetGitLabRepository() (owner, repo string, err error) {
+	repoURL, err := rm.db.GetConfig("gitlab.repository")
+	if err != nil {
+		return "", "", err
+	}
+
+	parts := strings.Split(repoURL, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid GitLab repository format: %s", repoURL)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// GetGitLabRepositoryWithURL retrieves the GitLab repository configuration with custom URL
+func (rm *RefsManager) GetGitLabRepositoryWithURL() (owner, repo, baseURL string, err error) {
+	owner, repo, err = rm.GetGitLabRepository()
+	if err != nil {
+		return "", "", "", err
+	}
+
+	baseURL, err = rm.db.GetConfig("gitlab.url")
+	if err != nil {
+		// URL not set, default to empty (will use gitlab.com)
+		return owner, repo, "", nil
+	}
+
+	return owner, repo, baseURL, nil
+}
+
+// RemoveGitLabRepository removes the GitLab repository configuration
+func (rm *RefsManager) RemoveGitLabRepository() error {
+	rm.db.RemoveConfig("gitlab.url") // Ignore error if doesn't exist
+	return rm.db.RemoveConfig("gitlab.repository")
+}
+
 // CreateRemoteTimeline creates a remote timeline reference
 func (rm *RefsManager) CreateRemoteTimeline(name, gitSHA1Hash string, description string) error {
 	// For remote timelines, we initially store with zero hashes until we harvest
@@ -640,4 +695,88 @@ func (rm *RefsManager) SealExists(sealName string) bool {
 	sealPath := filepath.Join(rm.refsDir, "seals", sealName)
 	_, err := os.Stat(sealPath)
 	return err == nil
+}
+
+// GetGitMapping retrieves the Ivaldi BLAKE3 hash for a Git SHA1 hash
+func (rm *RefsManager) GetGitMapping(gitSHA1 string) ([32]byte, error) {
+	blake3Hash, _, err := rm.LookupByGitHash(gitSHA1)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("git mapping not found for %s: %w", gitSHA1, err)
+	}
+	return blake3Hash, nil
+}
+
+// PutGitMapping stores a mapping from Git SHA1 hash to Ivaldi BLAKE3 hash
+func (rm *RefsManager) PutGitMapping(gitSHA1 string, blake3Hash [32]byte) error {
+	var sha256Hash [32]byte
+	return rm.MapGitHashToBlake3(gitSHA1, blake3Hash, sha256Hash)
+}
+
+// ResolveHashPrefix finds a commit hash by its prefix.
+// Returns the full hash if exactly one match found.
+// Returns error if no matches, ambiguous (multiple matches), or prefix too short.
+func (rm *RefsManager) ResolveHashPrefix(prefix string) ([32]byte, error) {
+	// Require minimum prefix length to avoid too many ambiguous matches
+	if len(prefix) < 4 {
+		return [32]byte{}, fmt.Errorf("hash prefix too short (minimum 4 characters): %s", prefix)
+	}
+
+	// Normalize prefix to lowercase for comparison
+	prefix = strings.ToLower(prefix)
+
+	sealsDir := filepath.Join(rm.refsDir, "seals")
+	if _, err := os.Stat(sealsDir); os.IsNotExist(err) {
+		return [32]byte{}, fmt.Errorf("no commits found with prefix: %s", prefix)
+	}
+
+	var matches []string
+
+	// Walk through all seal files to find matching hashes
+	err := filepath.Walk(sealsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil // Skip files we can't read
+		}
+
+		content := strings.TrimSpace(string(data))
+		parts := strings.SplitN(content, " ", 2)
+		if len(parts) < 1 {
+			return nil // Skip malformed files
+		}
+
+		hashHex := strings.ToLower(parts[0])
+		if strings.HasPrefix(hashHex, prefix) {
+			matches = append(matches, hashHex)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("failed to search commits: %w", err)
+	}
+
+	switch len(matches) {
+	case 0:
+		return [32]byte{}, fmt.Errorf("no commits found with prefix: %s", prefix)
+	case 1:
+		hashBytes, err := hex.DecodeString(matches[0])
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("invalid hash format: %w", err)
+		}
+		var hash [32]byte
+		copy(hash[:], hashBytes)
+		return hash, nil
+	default:
+		// Show up to 3 suggestions for ambiguous prefix
+		suggestions := matches
+		if len(suggestions) > 3 {
+			suggestions = suggestions[:3]
+		}
+		return [32]byte{}, fmt.Errorf("ambiguous prefix %s, could be: %s", prefix, strings.Join(suggestions, ", "))
+	}
 }

@@ -36,7 +36,7 @@ Flags:
 }
 
 func init() {
-	travelCmd.Flags().IntP("limit", "n", 20, "Number of recent seals to show (0 for all)")
+	travelCmd.Flags().IntP("window-size", "w", 0, "Number of seals to show in viewport (0 for auto-detect)")
 	travelCmd.Flags().BoolP("all", "a", false, "Show all seals without pagination")
 	travelCmd.Flags().StringP("search", "s", "", "Search for seals by message content")
 }
@@ -64,13 +64,8 @@ func runTravel(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get flags
-	limit, _ := cmd.Flags().GetInt("limit")
-	showAll, _ := cmd.Flags().GetBool("all")
+	windowSize, _ := cmd.Flags().GetInt("window-size")
 	searchTerm, _ := cmd.Flags().GetString("search")
-
-	if showAll {
-		limit = 0 // 0 means no limit
-	}
 
 	// Initialize refs manager
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
@@ -123,8 +118,8 @@ func runTravel(cmd *cobra.Command, args []string) error {
 		seals = allSeals
 	}
 
-	// Display seals and let user select (with pagination if needed)
-	selectedSeal, err := selectSealWithPagination(seals, currentTimeline, limit)
+	// Display seals and let user select with fixed window scrolling
+	selectedSeal, err := selectSealWithScrollWindow(seals, currentTimeline, windowSize)
 	if err != nil {
 		return err
 	}
@@ -219,29 +214,55 @@ func getCommitHistory(casStore cas.CAS, refsManager *refs.RefsManager, headHash 
 	return seals, nil
 }
 
-// selectSealWithPagination displays seals with pagination and lets user select one
-func selectSealWithPagination(seals []SealInfo, timelineName string, pageSize int) (*SealInfo, error) {
+// selectSealWithScrollWindow displays seals with a fixed scrolling window
+func selectSealWithScrollWindow(seals []SealInfo, timelineName string, windowSize int) (*SealInfo, error) {
 	totalSeals := len(seals)
 
-	// If no limit or seals fit on one page, use arrow key navigation
-	if pageSize == 0 || totalSeals <= pageSize {
-		return selectSealWithArrowKeys(seals, timelineName, 0, totalSeals)
+	// Auto-detect window size from terminal height if not specified
+	if windowSize <= 0 {
+		width, height, err := term.GetSize(int(os.Stdout.Fd()))
+		if err != nil || height < 10 {
+			// Fallback to default
+			windowSize = 10
+		} else {
+			// Reserve 6 lines for header/footer/spacing
+			windowSize = height - 6
+			// Each seal takes 4 lines (number+name, message, author, blank)
+			windowSize = windowSize / 4
+			if windowSize < 5 {
+				windowSize = 5
+			}
+			if windowSize > 20 {
+				windowSize = 20
+			}
+		}
+		_ = width // Suppress unused variable warning
 	}
 
-	// Paginated display with arrow key navigation
-	currentPage := 0
-	totalPages := (totalSeals + pageSize - 1) / pageSize
-	cursorPos := 0 // Cursor position within current page
+	// If all seals fit in window, adjust window size
+	if totalSeals < windowSize {
+		windowSize = totalSeals
+	}
+
+	windowStart := 0 // First seal shown in window
+	cursorPos := 0   // Cursor position within window (0 to windowSize-1)
+	needsFullRedraw := true
 
 	for {
-		startIdx := currentPage * pageSize
-		endIdx := startIdx + pageSize
-		if endIdx > totalSeals {
-			endIdx = totalSeals
+		// Calculate window bounds
+		windowEnd := windowStart + windowSize
+		if windowEnd > totalSeals {
+			windowEnd = totalSeals
 		}
+		actualWindowSize := windowEnd - windowStart
 
-		// Display current page with cursor
-		displaySealsWithCursor(seals, timelineName, startIdx, endIdx, startIdx+cursorPos, totalSeals, currentPage, totalPages)
+		// Display window
+		if needsFullRedraw {
+			displayFixedWindow(seals, timelineName, windowStart, windowEnd, cursorPos, totalSeals)
+			needsFullRedraw = false
+		} else {
+			updateCursor(seals, timelineName, windowStart, windowEnd, cursorPos, totalSeals)
+		}
 
 		// Read key input
 		key, err := readKey()
@@ -249,173 +270,199 @@ func selectSealWithPagination(seals []SealInfo, timelineName string, pageSize in
 			return nil, fmt.Errorf("failed to read key: %w", err)
 		}
 
-		pageSize := endIdx - startIdx
-
 		switch key {
 		case "up":
 			if cursorPos > 0 {
+				// Move cursor up within window
 				cursorPos--
-			} else if currentPage > 0 {
-				// Move to previous page, last item
-				currentPage--
-				newStart := currentPage * pageSize
-				newEnd := newStart + pageSize
-				if newEnd > totalSeals {
-					newEnd = totalSeals
-				}
-				cursorPos = (newEnd - newStart) - 1
+			} else if windowStart > 0 {
+				// Scroll window up
+				windowStart--
+				needsFullRedraw = true
 			}
 
 		case "down":
-			if cursorPos < pageSize-1 {
+			if cursorPos < actualWindowSize-1 {
+				// Move cursor down within window
 				cursorPos++
-			} else if currentPage < totalPages-1 {
-				// Move to next page, first item
-				currentPage++
-				cursorPos = 0
+			} else if windowEnd < totalSeals {
+				// Scroll window down
+				windowStart++
+				needsFullRedraw = true
 			}
 
 		case "enter":
-			selectedIdx := startIdx + cursorPos
-			return &seals[selectedIdx], nil
+			absoluteIdx := windowStart + cursorPos
+			// Restore terminal before returning
+			fmt.Print("\033[?25h") // Show cursor
+			return &seals[absoluteIdx], nil
 
 		case "q":
+			// Restore terminal before returning
+			fmt.Print("\033[?25h") // Show cursor
 			return nil, nil
 
-		case "n":
-			if currentPage < totalPages-1 {
-				currentPage++
-				cursorPos = 0
-			}
+		case "home":
+			// Jump to top
+			windowStart = 0
+			cursorPos = 0
+			needsFullRedraw = true
 
-		case "p":
-			if currentPage > 0 {
-				currentPage--
-				cursorPos = 0
+		case "end":
+			// Jump to bottom
+			windowStart = totalSeals - windowSize
+			if windowStart < 0 {
+				windowStart = 0
 			}
+			cursorPos = totalSeals - windowStart - 1
+			needsFullRedraw = true
 
 		default:
 			// Try to parse as number
 			if num, err := strconv.Atoi(key); err == nil {
 				if num >= 1 && num <= totalSeals {
-					return &seals[num-1], nil
+					// Jump to specific seal
+					absoluteIdx := num - 1
+					// Calculate window position to show selected seal
+					if absoluteIdx < windowStart || absoluteIdx >= windowEnd {
+						// Recenter window on selected item
+						windowStart = absoluteIdx - windowSize/2
+						if windowStart < 0 {
+							windowStart = 0
+						}
+						if windowStart+windowSize > totalSeals {
+							windowStart = totalSeals - windowSize
+							if windowStart < 0 {
+								windowStart = 0
+							}
+						}
+						cursorPos = absoluteIdx - windowStart
+						needsFullRedraw = true
+					} else {
+						// Item already in window, just move cursor
+						cursorPos = absoluteIdx - windowStart
+					}
 				}
 			}
 		}
 	}
 }
 
-// displaySealsWithCursor displays seals with a cursor highlight
-func displaySealsWithCursor(seals []SealInfo, timelineName string, startIdx, endIdx, cursorIdx, totalSeals, currentPage, totalPages int) {
-	// Clear screen
-	fmt.Print("\033[2J\033[H")
+// displayFixedWindow displays the entire fixed-size scrolling window
+func displayFixedWindow(seals []SealInfo, timelineName string, windowStart, windowEnd, cursorPos, totalSeals int) {
+	// Clear screen and hide cursor
+	fmt.Print("\033[2J\033[H\033[?25l")
 
-	if totalPages > 1 {
-		fmt.Printf("\n%s Seals in timeline '%s' (showing %d-%d of %d):\n\n",
-			colors.Bold("⏱"), colors.Bold(timelineName),
-			startIdx+1, endIdx, totalSeals)
-	} else {
-		fmt.Printf("\n%s Seals in timeline '%s':\n\n", colors.Bold("⏱"), colors.Bold(timelineName))
-	}
+	// Header with scroll indicator
+	scrollIndicator := buildScrollIndicator(windowStart, windowEnd, totalSeals)
+	fmt.Printf("╔═══════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║ %s Seals in timeline '%s' %s ║\n",
+		colors.Bold("⏱"),
+		colors.Bold(timelineName),
+		strings.Repeat(" ", 60-len(timelineName)-20))
+	fmt.Printf("║ Showing %d-%d of %d %s%s ║\n",
+		windowStart+1, windowEnd, totalSeals,
+		scrollIndicator,
+		strings.Repeat(" ", 60-len(scrollIndicator)-len(fmt.Sprintf("Showing %d-%d of %d ", windowStart+1, windowEnd, totalSeals))))
+	fmt.Printf("╚═══════════════════════════════════════════════════════════════════════╝\n\n")
 
-	for i := startIdx; i < endIdx; i++ {
+	// Display seals in window
+	for i := windowStart; i < windowEnd; i++ {
 		seal := seals[i]
+		relativePos := i - windowStart
+		isSelected := (relativePos == cursorPos)
+		isHead := (seal.Position == 0)
 
-		// Determine prefix (cursor or HEAD marker)
-		var prefix string
-		if i == cursorIdx {
-			// Current cursor position - highlighted
-			prefix = colors.Green("→ ")
-		} else if i == 0 {
-			// HEAD but not selected
-			prefix = colors.Dim("→ ")
-		} else {
-			prefix = "  "
-		}
-
-		// Highlight entire line if cursor is on it
-		sealName := seal.SealName
-		sealHash := hex.EncodeToString(seal.Hash[:4])
-		message := seal.Message
-		authorTime := fmt.Sprintf("%s • %s", seal.Author, seal.Timestamp)
-
-		if i == cursorIdx {
-			// Highlighted/selected line
-			fmt.Printf("%s%d. %s (%s)\n", prefix, i+1, colors.Bold(colors.Cyan(sealName)), colors.Bold(colors.Gray(sealHash)))
-			fmt.Printf("     %s\n", colors.Bold(message))
-			fmt.Printf("     %s\n", colors.Bold(colors.Gray(authorTime)))
-		} else {
-			// Normal line
-			fmt.Printf("%s%d. %s (%s)\n", prefix, i+1, colors.Cyan(sealName), colors.Gray(sealHash))
-			fmt.Printf("     %s\n", message)
-			fmt.Printf("     %s\n", colors.Gray(authorTime))
-		}
-
-		if i < endIdx-1 {
-			fmt.Println()
-		}
+		displaySealLine(seal, i+1, isSelected, isHead)
 	}
 
-	// Show navigation help
+	// Footer with help
 	fmt.Println()
-	if totalPages > 1 {
-		fmt.Printf("%s\n", colors.Dim(fmt.Sprintf("Page %d of %d", currentPage+1, totalPages)))
-	}
-
-	var helpItems []string
-	helpItems = append(helpItems, "↑/↓ navigate")
-	helpItems = append(helpItems, "Enter to select")
-	if totalPages > 1 {
-		helpItems = append(helpItems, "n/p page")
-	}
-	helpItems = append(helpItems, "q to quit")
-
-	fmt.Printf("%s\n", colors.Dim(strings.Join(helpItems, " • ")))
+	fmt.Printf("╔═══════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║ %s ║\n",
+		colors.Dim("↑/↓ navigate • Enter select • Home/End jump • 1-9 goto • q quit")[:71])
+	fmt.Printf("╚═══════════════════════════════════════════════════════════════════════╝\n")
 }
 
-// selectSealWithArrowKeys displays seals and lets user select with arrow keys
-func selectSealWithArrowKeys(seals []SealInfo, timelineName string, startIdx, endIdx int) (*SealInfo, error) {
-	cursorPos := 0 // Start at first seal
+// updateCursor efficiently updates just the cursor position (no full redraw)
+func updateCursor(seals []SealInfo, timelineName string, windowStart, windowEnd, cursorPos, totalSeals int) {
+	// This is a simplified version - for now just do full redraw
+	// In a more advanced version, we would use ANSI escape codes to update specific lines
+	displayFixedWindow(seals, timelineName, windowStart, windowEnd, cursorPos, totalSeals)
+}
 
-	for {
-		// Display seals with cursor
-		displaySealsWithCursor(seals, timelineName, startIdx, endIdx, cursorPos, endIdx-startIdx, 0, 1)
+// buildScrollIndicator creates a visual scroll position indicator
+func buildScrollIndicator(windowStart, windowEnd, totalSeals int) string {
+	if totalSeals <= windowEnd-windowStart {
+		return "[■■■■■■■■■■]" // All items visible
+	}
 
-		// Read key input
-		key, err := readKey()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read key: %w", err)
+	barLength := 10
+	position := float64(windowStart) / float64(totalSeals)
+	windowRatio := float64(windowEnd-windowStart) / float64(totalSeals)
+
+	filledStart := int(position * float64(barLength))
+	filledLength := int(windowRatio * float64(barLength))
+	if filledLength < 1 {
+		filledLength = 1
+	}
+
+	bar := "["
+	for i := 0; i < barLength; i++ {
+		if i >= filledStart && i < filledStart+filledLength {
+			bar += "■"
+		} else {
+			bar += "·"
 		}
+	}
+	bar += "]"
 
-		switch key {
-		case "up":
-			if cursorPos > 0 {
-				cursorPos--
-			}
+	return bar
+}
 
-		case "down":
-			if cursorPos < endIdx-startIdx-1 {
-				cursorPos++
-			}
+// displaySealLine displays a single seal with appropriate highlighting
+func displaySealLine(seal SealInfo, number int, isSelected, isHead bool) {
+	sealName := seal.SealName
+	sealHash := hex.EncodeToString(seal.Hash[:4])
+	message := seal.Message
+	if len(message) > 60 {
+		message = message[:57] + "..."
+	}
+	authorTime := fmt.Sprintf("%s • %s", seal.Author, seal.Timestamp)
 
-		case "enter":
-			return &seals[cursorPos], nil
-
-		case "q":
-			return nil, nil
-
-		default:
-			// Try to parse as number
-			if num, err := strconv.Atoi(key); err == nil {
-				if num >= 1 && num <= endIdx {
-					return &seals[num-1], nil
-				}
-			}
+	var prefix string
+	if isSelected {
+		if isHead {
+			prefix = colors.Green("→ ") + colors.Bold("[HEAD] ")
+		} else {
+			prefix = colors.Green("→ ")
 		}
+	} else if isHead {
+		prefix = "  " + colors.Dim("[HEAD] ")
+	} else {
+		prefix = "  "
+	}
+
+	if isSelected {
+		// Highlighted line with background
+		fmt.Printf("%s%s%d. %s (%s)%s\n",
+			prefix,
+			colors.Bold(colors.Green("")),
+			number,
+			colors.Bold(colors.Cyan(sealName)),
+			colors.Bold(colors.Gray(sealHash)),
+			colors.Bold(""))
+		fmt.Printf("     %s\n", colors.Bold(message))
+		fmt.Printf("     %s\n\n", colors.Bold(colors.Gray(authorTime)))
+	} else {
+		// Normal line
+		fmt.Printf("%s%d. %s (%s)\n", prefix, number, colors.Cyan(sealName), colors.Gray(sealHash))
+		fmt.Printf("     %s\n", message)
+		fmt.Printf("     %s\n\n", colors.Gray(authorTime))
 	}
 }
 
-// readKey reads a single key press (including arrow keys)
+// readKey reads a single key press (including arrow keys and special keys)
 func readKey() (string, error) {
 	// Save old terminal state
 	oldState, err := term.MakeRaw(int(syscall.Stdin))
@@ -424,14 +471,14 @@ func readKey() (string, error) {
 	}
 	defer term.Restore(int(syscall.Stdin), oldState)
 
-	buf := make([]byte, 3)
+	buf := make([]byte, 6)
 	n, err := os.Stdin.Read(buf)
 	if err != nil {
 		return "", err
 	}
 
-	// Handle escape sequences (arrow keys)
-	if n == 3 && buf[0] == 27 && buf[1] == 91 {
+	// Handle escape sequences (arrow keys and special keys)
+	if n >= 3 && buf[0] == 27 && buf[1] == 91 {
 		switch buf[2] {
 		case 65: // Up arrow
 			return "up", nil
@@ -441,6 +488,18 @@ func readKey() (string, error) {
 			return "right", nil
 		case 68: // Left arrow
 			return "left", nil
+		case 72: // Home key
+			return "home", nil
+		case 70: // End key
+			return "end", nil
+		case 49: // Extended escape sequences
+			if n >= 4 && buf[3] == 126 {
+				return "home", nil // Home on some terminals
+			}
+		case 52: // Extended escape sequences
+			if n >= 4 && buf[3] == 126 {
+				return "end", nil // End on some terminals
+			}
 		}
 	}
 
@@ -453,12 +512,12 @@ func readKey() (string, error) {
 			return "q", nil
 		case 'q', 'Q':
 			return "q", nil
-		case 'n', 'N':
-			return "n", nil
-		case 'p', 'P':
-			return "p", nil
+		case 'h', 'H':
+			return "home", nil
+		case 'e', 'E':
+			return "end", nil
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-			// For number input, we need to read more characters
+			// For number input, accumulate digits
 			return string(buf[0]), nil
 		}
 	}

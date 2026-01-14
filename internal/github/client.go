@@ -29,6 +29,7 @@ type Client struct {
 	httpClient  *http.Client
 	baseURL     string
 	token       string
+	tokenType   string
 	username    string
 	rateLimiter *RateLimiter
 }
@@ -71,6 +72,27 @@ type Commit struct {
 		SHA string `json:"sha"`
 	} `json:"tree"`
 	Message string `json:"message"`
+	Author  struct {
+		Name  string    `json:"name"`
+		Email string    `json:"email"`
+		Date  time.Time `json:"date"`
+	} `json:"author"`
+	Committer struct {
+		Name  string    `json:"name"`
+		Email string    `json:"email"`
+		Date  time.Time `json:"date"`
+	} `json:"committer"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+}
+
+// Tag represents a GitHub tag/release
+type Tag struct {
+	Name       string `json:"name"`
+	CommitSHA  string `json:"commit"`
+	ZipballURL string `json:"zipball_url"`
+	TarballURL string `json:"tarball_url"`
 }
 
 // FileContent represents a file's content from GitHub
@@ -114,17 +136,17 @@ type BlobResponse struct {
 
 // CreateTreeRequest represents a request to create a tree
 type CreateTreeRequest struct {
-	Tree    []GitTreeEntry `json:"tree"`
-	BaseTree string        `json:"base_tree,omitempty"`
+	Tree     []GitTreeEntry `json:"tree"`
+	BaseTree string         `json:"base_tree,omitempty"`
 }
 
 // GitTreeEntry represents an entry when creating a tree
 type GitTreeEntry struct {
-	Path    string `json:"path"`
-	Mode    string `json:"mode"`
-	Type    string `json:"type"`
-	SHA     string `json:"sha,omitempty"`
-	Content string `json:"content,omitempty"`
+	Path    string  `json:"path"`
+	Mode    string  `json:"mode"`
+	Type    string  `json:"type"`
+	SHA     *string `json:"sha,omitempty"`
+	Content *string `json:"content,omitempty"`
 }
 
 // TreeResponse represents a response from creating a tree
@@ -135,10 +157,10 @@ type TreeResponse struct {
 
 // CreateCommitRequest represents a request to create a commit
 type CreateCommitRequest struct {
-	Message string   `json:"message"`
-	Tree    string   `json:"tree"`
-	Parents []string `json:"parents"`
-	Author  *GitUser `json:"author,omitempty"`
+	Message   string   `json:"message"`
+	Tree      string   `json:"tree"`
+	Parents   []string `json:"parents"`
+	Author    *GitUser `json:"author,omitempty"`
 	Committer *GitUser `json:"committer,omitempty"`
 }
 
@@ -162,14 +184,21 @@ type UpdateRefRequest struct {
 	Force bool   `json:"force,omitempty"`
 }
 
-// NewClient creates a new GitHub API client
+// NewClient creates a new GitHub API client (requires authentication)
 func NewClient() (*Client, error) {
 	// Try to get authentication from various sources
-	token := getAuthToken()
+	token, tokenType := getAuthToken()
 	username := getUsername()
 
 	if token == "" {
-		return nil, fmt.Errorf("no GitHub authentication found. Run 'ivaldi auth login' to authenticate or set GITHUB_TOKEN environment variable")
+		return nil, fmt.Errorf("no GitHub authentication found.\n\n" +
+			"To authenticate, you have two options:\n\n" +
+			"Option 1 - OAuth (Recommended, works like 'gh auth login'):\n" +
+			"  Run: ivaldi auth login\n\n" +
+			"Option 2 - Personal Access Token:\n" +
+			"  1. Create a token at: https://github.com/settings/tokens/new\n" +
+			"  2. Grant 'repo' scope\n" +
+			"  3. Set: export GITHUB_TOKEN=your_token_here")
 	}
 
 	return &Client{
@@ -178,44 +207,72 @@ func NewClient() (*Client, error) {
 		},
 		baseURL:     GitHubAPIURL,
 		token:       token,
+		tokenType:   tokenType,
 		username:    username,
 		rateLimiter: &RateLimiter{},
 	}, nil
 }
 
+// NewClientOptionalAuth creates a GitHub API client with optional authentication
+// This allows downloading public repositories without logging in
+// Note: Unauthenticated requests have lower rate limits (60 requests/hour)
+func NewClientOptionalAuth() *Client {
+	// Try to get authentication from various sources
+	token, tokenType := getAuthToken()
+	username := getUsername()
+
+	// Create client even without authentication (works for public repos)
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		baseURL:     GitHubAPIURL,
+		token:       token,
+		tokenType:   tokenType,
+		username:    username,
+		rateLimiter: &RateLimiter{},
+	}
+}
+
+// IsAuthenticated returns true if the client has authentication configured
+func (c *Client) IsAuthenticated() bool {
+	return c.token != ""
+}
+
 // getAuthToken attempts to get GitHub auth token from various sources
-func getAuthToken() string {
+func getAuthToken() (string, string) {
 	// 1. Check Ivaldi OAuth token (highest priority)
-	if token, err := auth.GetToken(); err == nil && token != "" {
-		return token
+	if token, err := auth.GetToken(auth.PlatformGitHub); err == nil && token != "" {
+		tokenType, _ := auth.GetTokenType(auth.PlatformGitHub)
+		return token, tokenType
 	}
 
 	// 2. Check environment variable
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 3. Check git config for github token
 	if token := getGitConfig("github.token"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 4. Try to read from git credential helper
 	if token := getGitCredential("github.com"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 5. Check .netrc file
 	if token := getNetrcToken("github.com"); token != "" {
-		return token
+		return token, ""
 	}
 
 	// 6. Check gh CLI config
 	if token := getGHCLIToken(); token != "" {
-		return token
+		return token, ""
 	}
 
-	return ""
+	return "", ""
 }
 
 // getUsername attempts to get GitHub username
@@ -250,8 +307,15 @@ func getGitConfig(key string) string {
 
 // getGitCredential uses git credential helper to get credentials
 func getGitCredential(host string) string {
-	cmd := exec.Command("git", "credential", "fill")
+	// Use a context with timeout to prevent hanging on interactive prompts
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "credential", "fill")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("protocol=https\nhost=%s\n\n", host))
+
+	// Disable interactive prompts to prevent user from being prompted
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -350,7 +414,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	// Set headers
 	req.Header.Set("Accept", AcceptHeader)
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", c.token))
+	req.Header.Set("Authorization", fmt.Sprintf("%s %s", c.authHeaderType(), c.token))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -371,6 +435,13 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}
 
 	return resp, nil
+}
+
+func (c *Client) authHeaderType() string {
+	if strings.EqualFold(c.tokenType, "bearer") {
+		return "Bearer"
+	}
+	return "token"
 }
 
 // updateRateLimits updates rate limit information from response headers
@@ -606,6 +677,41 @@ func (c *Client) WaitForRateLimit() {
 	}
 }
 
+// DownloadArchive downloads a repository archive (tarball) without using the API
+// This does NOT count against API rate limits
+func (c *Client) DownloadArchive(ctx context.Context, owner, repo, ref string) ([]byte, error) {
+	// Use codeload.github.com which doesn't count against API rate limits
+	archiveURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/%s", owner, repo, ref)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", archiveURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create archive request: %w", err)
+	}
+
+	// Add authorization for private repos
+	if c.token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download archive: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("archive download failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read archive data: %w", err)
+	}
+
+	return data, nil
+}
+
 // FileUploadRequest represents a request to upload/update a file
 type FileUploadRequest struct {
 	Message string `json:"message"`
@@ -708,4 +814,118 @@ func (c *Client) UpdateRef(ctx context.Context, owner, repo, ref string, req Upd
 	defer resp.Body.Close()
 
 	return nil
+}
+
+// ListCommits fetches commits from a repository branch with optional depth limit
+func (c *Client) ListCommits(ctx context.Context, owner, repo, branch string, depth int) ([]*Commit, error) {
+	commits := make([]*Commit, 0)
+	page := 1
+	perPage := 100
+
+	for {
+		path := fmt.Sprintf("/repos/%s/%s/commits?sha=%s&per_page=%d&page=%d", owner, repo, branch, perPage, page)
+		resp, err := c.doRequest(ctx, "GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		var pageCommits []struct {
+			SHA    string `json:"sha"`
+			Commit struct {
+				Author struct {
+					Name  string    `json:"name"`
+					Email string    `json:"email"`
+					Date  time.Time `json:"date"`
+				} `json:"author"`
+				Committer struct {
+					Name  string    `json:"name"`
+					Email string    `json:"email"`
+					Date  time.Time `json:"date"`
+				} `json:"committer"`
+				Message string `json:"message"`
+				Tree    struct {
+					SHA string `json:"sha"`
+				} `json:"tree"`
+			} `json:"commit"`
+			Parents []struct {
+				SHA string `json:"sha"`
+			} `json:"parents"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&pageCommits); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode commits: %w", err)
+		}
+		resp.Body.Close()
+
+		// Log progress for large repositories
+		if page > 1 {
+			fmt.Printf("\rFetching commits: %d commits retrieved (page %d)...", len(commits), page)
+		}
+
+		for _, pc := range pageCommits {
+			commit := &Commit{
+				SHA:     pc.SHA,
+				TreeSHA: pc.Commit.Tree.SHA,
+				Message: pc.Commit.Message,
+			}
+			commit.Tree.SHA = pc.Commit.Tree.SHA
+			commit.Author = pc.Commit.Author
+			commit.Committer = pc.Commit.Committer
+			commit.Parents = pc.Parents
+
+			commits = append(commits, commit)
+
+			if depth > 0 && len(commits) >= depth {
+				if page > 1 {
+					fmt.Println() // New line after progress
+				}
+				return commits, nil
+			}
+		}
+
+		// If we got fewer commits than requested, we've reached the end
+		if len(pageCommits) < perPage {
+			if page > 1 {
+				fmt.Println() // New line after progress
+			}
+			break
+		}
+
+		page++
+	}
+
+	return commits, nil
+}
+
+// ListTags fetches all tags from a repository
+func (c *Client) ListTags(ctx context.Context, owner, repo string) ([]*Tag, error) {
+	tags := make([]*Tag, 0)
+	page := 1
+	perPage := 100
+
+	for {
+		path := fmt.Sprintf("/repos/%s/%s/tags?per_page=%d&page=%d", owner, repo, perPage, page)
+		resp, err := c.doRequest(ctx, "GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		var pageTags []*Tag
+		if err := json.NewDecoder(resp.Body).Decode(&pageTags); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode tags: %w", err)
+		}
+		resp.Body.Close()
+
+		tags = append(tags, pageTags...)
+
+		if len(pageTags) < perPage {
+			break
+		}
+
+		page++
+	}
+
+	return tags, nil
 }

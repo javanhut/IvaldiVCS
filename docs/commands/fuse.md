@@ -167,7 +167,36 @@ ivaldi fuse --strategy=theirs feature-auth to main
 ivaldi fuse --strategy=ours feature-auth to main
 ```
 
-### Option 2: Manual Resolution
+### Option 2: Interactive Resolution
+
+Use the built-in interactive resolver for file-by-file conflict resolution:
+
+```bash
+$ ivaldi fuse --continue
+
+Resolving conflicts interactively...
+
+Conflict 1 of 2: src/auth.go
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1] Keep OURS (target timeline)
+[2] Keep THEIRS (source timeline)
+[3] Keep BOTH (concatenate)
+[4] Edit manually
+[5] Skip this file
+[6] Abort merge
+
+Choice [1-6]:
+```
+
+The resolver shows:
+- Current file and conflict number
+- Preview of conflicting sections
+- Multiple resolution options
+
+After resolving all conflicts, the merge completes automatically.
+
+### Option 3: Manual Resolution
 
 ```bash
 # Edit conflicted files
@@ -180,7 +209,7 @@ ivaldi gather src/auth.go
 ivaldi fuse --continue
 ```
 
-### Option 3: Abort
+### Option 4: Abort
 
 ```bash
 ivaldi fuse --abort

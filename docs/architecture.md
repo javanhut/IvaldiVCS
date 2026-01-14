@@ -582,8 +582,13 @@ internal/
 ├── commit/       # Commit management
 ├── filechunk/    # File chunking system
 ├── github/       # GitHub integration
+│   ├── sync.go          # Core sync operations
+│   ├── sync_clone.go    # Clone/download operations
+│   ├── sync_push.go     # Push/upload operations
+│   └── sync_download.go # File download utilities
 ├── hamtdir/      # HAMT directory trees
 ├── history/      # MMR and timeline history
+├── logging/      # Structured slog-based logging
 ├── refs/         # Reference management
 ├── workspace/    # Workspace materialization
 └── wsindex/      # Workspace indexing

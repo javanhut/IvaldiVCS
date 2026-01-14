@@ -26,6 +26,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/hamtdir"
+	"github.com/javanhut/Ivaldi-vcs/internal/logging"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/shelf"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
@@ -253,12 +254,12 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 
 			// Restore staged files if any
 			if err := shelfManager.RestoreStagedFiles(autoShelf); err != nil {
-				fmt.Printf("Warning: failed to restore staged files: %v\n", err)
+				logging.Warn("Failed to restore staged files", "error", err)
 			}
 
 			// Remove the auto-shelf since we're applying it
 			if err := shelfManager.RemoveAutoShelf(timelineName); err != nil {
-				fmt.Printf("Warning: failed to remove applied auto-shelf: %v\n", err)
+				logging.Warn("Failed to remove applied auto-shelf", "error", err)
 			}
 		}
 	}
@@ -452,7 +453,7 @@ func (m *Materializer) ApplyChangesToWorkspace(diff *diffmerge.WorkspaceDiff) er
 			err = os.Chtimes(fullPath, change.NewFile.ModTime, change.NewFile.ModTime)
 			if err != nil {
 				// Don't fail on timestamp errors, just log
-				fmt.Printf("Warning: failed to set timestamp for %s: %v\n", change.Path, err)
+				logging.Warn("Failed to set timestamp", "path", change.Path, "error", err)
 			}
 
 		case diffmerge.Removed:

@@ -93,7 +93,7 @@ Before using `ivaldi sync`, ensure:
 
 2. You have previously cloned or downloaded from the repository:
    ```bash
-   ivaldi download github:owner/repo
+   ivaldi download owner/repo
    ```
 
 ## How It Works
