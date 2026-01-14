@@ -15,6 +15,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/logging"
 	"github.com/javanhut/Ivaldi-vcs/internal/progress"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
@@ -244,7 +245,7 @@ func (c *Cloner) importHistory(repo *git.Repository, head *plumbing.Reference, i
 		// Store Git SHA → Ivaldi hash mapping
 		err = refsManager.PutGitMapping(gitCommit.Hash.String(), commitHash)
 		if err != nil {
-			fmt.Printf("\nWarning: failed to store Git mapping: %v\n", err)
+			logging.Warn("Failed to store Git mapping", "error", err)
 		}
 
 		// Update timeline
@@ -426,7 +427,7 @@ func (c *Cloner) importTags(repo *git.Repository, refsManager *refs.RefsManager)
 	})
 
 	if err != nil {
-		fmt.Printf("Warning: failed to import some tags: %v\n", err)
+		logging.Warn("Failed to import some tags", "error", err)
 	}
 
 	if tagCount > 0 {

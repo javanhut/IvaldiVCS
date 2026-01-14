@@ -327,6 +327,303 @@ func TestListFiles(t *testing.T) {
 	}
 }
 
+func TestTreeToFileMetadata(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Create commit with test files
+	files := createTestWorkspaceFiles(casStore)
+	commit, err := builder.CreateCommit(
+		files,
+		nil,
+		"Test Author <test@example.com>",
+		"Test Committer <test@example.com>",
+		"Test commit for TreeToFileMetadata",
+	)
+	if err != nil {
+		t.Fatalf("CreateCommit failed: %v", err)
+	}
+
+	// Read tree
+	tree, err := reader.ReadTree(commit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+
+	// Convert tree to file metadata
+	metadata, err := reader.TreeToFileMetadata(tree)
+	if err != nil {
+		t.Fatalf("TreeToFileMetadata failed: %v", err)
+	}
+
+	// Expected files from createTestWorkspaceFiles
+	expectedFiles := []string{
+		"README.md",
+		"src/main.go",
+		"src/util.go",
+		"docs/guide.md",
+		"test/main_test.go",
+	}
+
+	// Verify correct number of files
+	if len(metadata) != len(expectedFiles) {
+		t.Errorf("Expected %d files, got %d", len(expectedFiles), len(metadata))
+	}
+
+	// Create a map for easier lookup
+	metadataMap := make(map[string]wsindex.FileMetadata)
+	for _, m := range metadata {
+		metadataMap[m.Path] = m
+	}
+
+	// Verify each expected file exists with correct data
+	for _, expectedPath := range expectedFiles {
+		m, exists := metadataMap[expectedPath]
+		if !exists {
+			t.Errorf("Expected file %s not found in metadata", expectedPath)
+			continue
+		}
+
+		// Verify FileRef is populated
+		if m.FileRef.Hash == (cas.Hash{}) {
+			t.Errorf("File %s has empty FileRef.Hash", expectedPath)
+		}
+
+		// Verify Size is set
+		if m.Size <= 0 {
+			t.Errorf("File %s has invalid size: %d", expectedPath, m.Size)
+		}
+
+		// Verify FileRef.Size matches Size
+		if m.FileRef.Size != m.Size {
+			t.Errorf("File %s: FileRef.Size (%d) != Size (%d)", expectedPath, m.FileRef.Size, m.Size)
+		}
+
+		// Verify Checksum is set (should equal FileRef.Hash for files)
+		if m.Checksum == (cas.Hash{}) {
+			t.Errorf("File %s has empty Checksum", expectedPath)
+		}
+
+		// Verify Mode is set to default
+		if m.Mode != 0644 {
+			t.Errorf("File %s has unexpected mode: %o (expected 0644)", expectedPath, m.Mode)
+		}
+	}
+}
+
+func TestTreeToFileMetadataEmpty(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Create empty commit
+	commit, err := builder.CreateCommit(
+		nil, // No files
+		nil,
+		"Test Author <test@example.com>",
+		"Test Committer <test@example.com>",
+		"Empty commit",
+	)
+	if err != nil {
+		t.Fatalf("CreateCommit failed: %v", err)
+	}
+
+	// Read tree
+	tree, err := reader.ReadTree(commit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+
+	// Convert tree to file metadata
+	metadata, err := reader.TreeToFileMetadata(tree)
+	if err != nil {
+		t.Fatalf("TreeToFileMetadata failed: %v", err)
+	}
+
+	// Should return empty slice for empty tree
+	if len(metadata) != 0 {
+		t.Errorf("Expected 0 files for empty tree, got %d", len(metadata))
+	}
+}
+
+func TestIsAncestor_DirectParent(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Create first commit (will be ancestor)
+	commit1, err := builder.CreateCommit(
+		nil,
+		nil, // No parents
+		"Author <author@example.com>",
+		"Author <author@example.com>",
+		"First commit",
+	)
+	if err != nil {
+		t.Fatalf("CreateCommit 1 failed: %v", err)
+	}
+	commit1Hash := builder.GetCommitHash(commit1)
+
+	// Create second commit with first as parent
+	commit2, err := builder.CreateCommit(
+		nil,
+		[]cas.Hash{commit1Hash},
+		"Author <author@example.com>",
+		"Author <author@example.com>",
+		"Second commit",
+	)
+	if err != nil {
+		t.Fatalf("CreateCommit 2 failed: %v", err)
+	}
+	commit2Hash := builder.GetCommitHash(commit2)
+
+	// commit1 should be ancestor of commit2
+	isAncestor, err := reader.IsAncestor(commit1Hash, commit2Hash)
+	if err != nil {
+		t.Fatalf("IsAncestor failed: %v", err)
+	}
+	if !isAncestor {
+		t.Error("Expected commit1 to be ancestor of commit2")
+	}
+
+	// commit2 should NOT be ancestor of commit1
+	isAncestor, err = reader.IsAncestor(commit2Hash, commit1Hash)
+	if err != nil {
+		t.Fatalf("IsAncestor failed: %v", err)
+	}
+	if isAncestor {
+		t.Error("Expected commit2 NOT to be ancestor of commit1")
+	}
+}
+
+func TestIsAncestor_Grandparent(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Create chain: commit1 <- commit2 <- commit3
+	commit1, _ := builder.CreateCommit(nil, nil, "A", "A", "First")
+	commit1Hash := builder.GetCommitHash(commit1)
+
+	commit2, _ := builder.CreateCommit(nil, []cas.Hash{commit1Hash}, "A", "A", "Second")
+	commit2Hash := builder.GetCommitHash(commit2)
+
+	commit3, _ := builder.CreateCommit(nil, []cas.Hash{commit2Hash}, "A", "A", "Third")
+	commit3Hash := builder.GetCommitHash(commit3)
+
+	// commit1 (grandparent) should be ancestor of commit3
+	isAncestor, err := reader.IsAncestor(commit1Hash, commit3Hash)
+	if err != nil {
+		t.Fatalf("IsAncestor failed: %v", err)
+	}
+	if !isAncestor {
+		t.Error("Expected commit1 (grandparent) to be ancestor of commit3")
+	}
+
+	// commit2 (parent) should also be ancestor of commit3
+	isAncestor, err = reader.IsAncestor(commit2Hash, commit3Hash)
+	if err != nil {
+		t.Fatalf("IsAncestor failed: %v", err)
+	}
+	if !isAncestor {
+		t.Error("Expected commit2 (parent) to be ancestor of commit3")
+	}
+}
+
+func TestIsAncestor_SameCommit(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	commit1, _ := builder.CreateCommit(nil, nil, "A", "A", "First")
+	commit1Hash := builder.GetCommitHash(commit1)
+
+	// A commit should be its own ancestor
+	isAncestor, err := reader.IsAncestor(commit1Hash, commit1Hash)
+	if err != nil {
+		t.Fatalf("IsAncestor failed: %v", err)
+	}
+	if !isAncestor {
+		t.Error("Expected commit to be its own ancestor")
+	}
+}
+
+func TestIsAncestor_UnrelatedCommits(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Create two unrelated commits (both have no parents)
+	commit1, _ := builder.CreateCommit(nil, nil, "A", "A", "First branch")
+	commit1Hash := builder.GetCommitHash(commit1)
+
+	commit2, _ := builder.CreateCommit(nil, nil, "A", "A", "Second branch")
+	commit2Hash := builder.GetCommitHash(commit2)
+
+	// Neither should be ancestor of the other
+	isAncestor, err := reader.IsAncestor(commit1Hash, commit2Hash)
+	if err != nil {
+		t.Fatalf("IsAncestor failed: %v", err)
+	}
+	if isAncestor {
+		t.Error("Expected unrelated commits NOT to have ancestry")
+	}
+
+	isAncestor, err = reader.IsAncestor(commit2Hash, commit1Hash)
+	if err != nil {
+		t.Fatalf("IsAncestor failed: %v", err)
+	}
+	if isAncestor {
+		t.Error("Expected unrelated commits NOT to have ancestry")
+	}
+}
+
+func TestIsAncestor_MergeCommit(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Create base commit
+	base, _ := builder.CreateCommit(nil, nil, "A", "A", "Base")
+	baseHash := builder.GetCommitHash(base)
+
+	// Create two branches from base
+	branch1, _ := builder.CreateCommit(nil, []cas.Hash{baseHash}, "A", "A", "Branch 1")
+	branch1Hash := builder.GetCommitHash(branch1)
+
+	branch2, _ := builder.CreateCommit(nil, []cas.Hash{baseHash}, "A", "A", "Branch 2")
+	branch2Hash := builder.GetCommitHash(branch2)
+
+	// Create merge commit with both branches as parents
+	merge, _ := builder.CreateCommit(nil, []cas.Hash{branch1Hash, branch2Hash}, "A", "A", "Merge")
+	mergeHash := builder.GetCommitHash(merge)
+
+	// Both branches should be ancestors of merge
+	isAncestor, _ := reader.IsAncestor(branch1Hash, mergeHash)
+	if !isAncestor {
+		t.Error("Expected branch1 to be ancestor of merge")
+	}
+
+	isAncestor, _ = reader.IsAncestor(branch2Hash, mergeHash)
+	if !isAncestor {
+		t.Error("Expected branch2 to be ancestor of merge")
+	}
+
+	// Base should also be ancestor of merge (through both branches)
+	isAncestor, _ = reader.IsAncestor(baseHash, mergeHash)
+	if !isAncestor {
+		t.Error("Expected base to be ancestor of merge")
+	}
+}
+
 func TestEmptyCommit(t *testing.T) {
 	casStore := cas.NewMemoryCAS()
 	mmr := history.NewMMR()

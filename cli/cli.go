@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/converter"
+	"github.com/javanhut/Ivaldi-vcs/internal/logging"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/spf13/cobra"
 )
@@ -40,9 +41,20 @@ func Execute() {
 	}
 }
 
-var version bool
+var (
+	version bool
+	verbose int  // -v count for verbosity
+	quiet   bool // -q flag for quiet mode
+)
 
 func init() {
+	// Initialize logging on startup
+	cobra.OnInitialize(initLogging)
+
+	// Global flags (available to all commands)
+	rootCmd.PersistentFlags().CountVarP(&verbose, "verbose", "v", "Increase output verbosity (-v for info, -vv for debug)")
+	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress non-error output")
+
 	// Core commands
 	rootCmd.Flags().BoolVar(&version, "version", false, "Use this to get the Version of Ivaldi")
 	rootCmd.AddCommand(initialCmd)
@@ -113,41 +125,41 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
-	log.Println("Ivaldi repository initialized")
+	logging.Info("Ivaldi repository initialized")
 
 	// Initialize refs system
-	log.Println("Initializing timeline management system...")
+	logging.Info("Initializing timeline management system...")
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
-		log.Printf("Warning: Failed to initialize refs system: %v", err)
+		logging.Warn("Failed to initialize refs system", "error", err)
 	} else {
 		defer refsManager.Close()
 
 		// Check if we're in a Git repository
 		if _, err := os.Stat(".git"); err == nil {
-			log.Println("Detecting existing Git repository, importing refs and converting objects...")
+			logging.Info("Detecting existing Git repository, importing refs and converting objects...")
 
 			// Import Git refs first
 			if err := refsManager.InitializeFromGit(".git"); err != nil {
-				log.Printf("Warning: Failed to import Git refs: %v", err)
+				logging.Warn("Failed to import Git refs", "error", err)
 			} else {
-				log.Println("Successfully imported Git refs to Ivaldi timeline system")
+				logging.Info("Successfully imported Git refs to Ivaldi timeline system")
 			}
 
 			// Convert Git objects with shared database connection using concurrent workers
-			log.Println("Converting Git objects to Ivaldi format...")
+			logging.Info("Converting Git objects to Ivaldi format...")
 			gitResult, err := converter.ConvertGitObjectsToIvaldiConcurrent(".git", ivaldiDir, 16)
 			if err != nil {
-				log.Printf("Warning: Failed to convert Git objects: %v", err)
+				logging.Warn("Failed to convert Git objects", "error", err)
 			} else {
-				log.Printf("Successfully converted %d Git objects", gitResult.Converted)
+				logging.Info("Successfully converted Git objects", "count", gitResult.Converted)
 				if gitResult.Skipped > 0 {
-					log.Printf("Skipped %d Git objects due to errors", gitResult.Skipped)
+					logging.Warn("Skipped Git objects due to errors", "count", gitResult.Skipped)
 				}
 			}
 
 			if _, err := os.Stat(".gitmodules"); err == nil {
-				log.Println("📦 Detected Git submodules, converting to Ivaldi format...")
+				logging.Info("Detected Git submodules, converting to Ivaldi format...")
 
 				submoduleResult, err := converter.ConvertGitSubmodulesToIvaldi(
 					".git",
@@ -157,30 +169,30 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 				)
 
 				if err != nil {
-					log.Printf("Warning: Submodule conversion encountered errors: %v", err)
+					logging.Warn("Submodule conversion encountered errors", "error", err)
 				}
 
 				if submoduleResult.Converted > 0 {
-					log.Printf("✓ Converted %d Git submodules", submoduleResult.Converted)
+					logging.Info("Converted Git submodules", "count", submoduleResult.Converted)
 				}
 				if submoduleResult.ClonedModules > 0 {
-					log.Printf("✓ Cloned %d missing submodules", submoduleResult.ClonedModules)
+					logging.Info("Cloned missing submodules", "count", submoduleResult.ClonedModules)
 				}
 				if submoduleResult.Skipped > 0 {
-					log.Printf("⚠ Skipped %d submodules due to errors", submoduleResult.Skipped)
+					logging.Warn("Skipped submodules due to errors", "count", submoduleResult.Skipped)
 					for i, err := range submoduleResult.Errors {
 						if i < 3 {
-							log.Printf("  - %v", err)
+							logging.Warn("Submodule error", "error", err)
 						}
 					}
 					if len(submoduleResult.Errors) > 3 {
-						log.Printf("  ... and %d more errors", len(submoduleResult.Errors)-3)
+						logging.Warn("Additional submodule errors", "count", len(submoduleResult.Errors)-3)
 					}
 				}
 			}
 		} else {
 			// Initialize default timeline for new repository
-			log.Println("Creating default 'main' timeline...")
+			logging.Info("Creating default 'main' timeline...")
 
 			// Initially create main timeline with zero hashes
 			var zeroHash [32]byte
@@ -193,52 +205,52 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 				"Initial empty repository",
 			)
 			if err != nil {
-				log.Printf("Warning: Failed to create main timeline: %v", err)
+				logging.Warn("Failed to create main timeline", "error", err)
 			} else {
-				log.Println("Successfully created main timeline")
+				logging.Info("Successfully created main timeline")
 			}
 
 			// Set main as current timeline
 			if err := refsManager.SetCurrentTimeline("main"); err != nil {
-				log.Printf("Warning: Failed to set current timeline: %v", err)
+				logging.Warn("Failed to set current timeline", "error", err)
 			}
 		}
 	}
 
 	// Create snapshot of current files using concurrent workers
-	log.Println("Creating snapshot of current files...")
+	logging.Info("Creating snapshot of current files...")
 	result, err := converter.SnapshotCurrentFilesConcurrent(workDir, ivaldiDir, 8)
 	if err != nil {
-		log.Printf("Warning: Failed to snapshot files: %v", err)
+		logging.Warn("Failed to snapshot files", "error", err)
 	} else {
-		log.Printf("Snapshotted %d files as blob objects", result.Converted)
+		logging.Info("Snapshotted files as blob objects", "count", result.Converted)
 		if result.Skipped > 0 {
-			log.Printf("Skipped %d files due to errors", result.Skipped)
+			logging.Warn("Skipped files due to errors", "count", result.Skipped)
 		}
 		if len(result.Errors) > 0 {
-			log.Printf("Errors encountered during snapshot:")
+			logging.Warn("Errors encountered during snapshot", "count", len(result.Errors))
 			for _, e := range result.Errors[:min(3, len(result.Errors))] { // Show first 3 errors
-				log.Printf("  - %v", e)
+				logging.Warn("Snapshot error", "error", e)
 			}
 			if len(result.Errors) > 3 {
-				log.Printf("  ... and %d more errors", len(result.Errors)-3)
+				logging.Warn("Additional snapshot errors", "count", len(result.Errors)-3)
 			}
 		}
 
 		// If we snapshotted files, create an initial commit
 		if result.Converted > 0 {
-			log.Println("Creating initial commit for existing files...")
+			logging.Info("Creating initial commit for existing files...")
 			commitHash, err := createInitialCommit(ivaldiDir, workDir)
 			if err != nil {
-				log.Printf("Warning: Failed to create initial commit: %v", err)
+				logging.Warn("Failed to create initial commit", "error", err)
 			} else if commitHash != nil {
 				// Update main timeline to point to the initial commit
-				log.Println("Updating main timeline with initial commit...")
+				logging.Info("Updating main timeline with initial commit...")
 
 				// Re-open refs manager to update the timeline
 				refsManager2, err := refs.NewRefsManager(ivaldiDir)
 				if err != nil {
-					log.Printf("Warning: Failed to reopen refs manager: %v", err)
+					logging.Warn("Failed to reopen refs manager", "error", err)
 				} else {
 					defer refsManager2.Close()
 
@@ -251,9 +263,9 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 						"",          // No Git SHA1
 					)
 					if err != nil {
-						log.Printf("Warning: Failed to update main timeline with initial commit: %v", err)
+						logging.Warn("Failed to update main timeline with initial commit", "error", err)
 					} else {
-						log.Println("Successfully updated main timeline with initial commit")
+						logging.Info("Successfully updated main timeline with initial commit")
 					}
 				}
 			}
@@ -261,10 +273,21 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 	}
 
 	// Create initial snapshot for status tracking
-	log.Println("Creating initial snapshot for status tracking...")
+	logging.Info("Creating initial snapshot for status tracking...")
 	if err := updateLastSnapshot(workDir, ivaldiDir); err != nil {
-		log.Printf("Warning: Failed to create initial snapshot: %v", err)
+		logging.Warn("Failed to create initial snapshot", "error", err)
 	}
+}
+
+// initLogging initializes the logging system based on CLI flags.
+func initLogging() {
+	var level logging.Level
+	if quiet {
+		level = logging.LevelQuiet
+	} else {
+		level = logging.Level(verbose)
+	}
+	logging.Init(level)
 }
 
 func min(a, b int) int {

@@ -26,7 +26,22 @@ Show differences between:
 
 - `--staged` - Show staged changes
 - `--stat` - Show summary statistics
-- `<seal>` - Compare with specific seal
+- `<seal>` - Compare with specific seal (full hash or prefix)
+
+## Hash Prefix Support
+
+You can use short hash prefixes instead of full 64-character hashes:
+
+```bash
+# Full hash
+ivaldi diff 447abe9b1234567890abcdef1234567890abcdef1234567890abcdef12345678
+
+# Short prefix (minimum 4 characters)
+ivaldi diff 447a
+ivaldi diff 447abe9b
+```
+
+The prefix must be unique - if multiple commits match, you'll be prompted to use a longer prefix.
 
 ## Examples
 

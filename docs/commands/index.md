@@ -123,6 +123,30 @@ ivaldi timeline switch branch-name # Switch to it
 ivaldi upload            # Push changes
 ```
 
+## Global Options
+
+These flags are available on all commands:
+
+### --verbose, -v
+
+Show detailed output including debug information:
+
+```bash
+ivaldi --verbose status
+ivaldi -v download owner/repo
+```
+
+### --quiet, -q
+
+Suppress non-essential output:
+
+```bash
+ivaldi --quiet gather .
+ivaldi -q seal "Quick commit"
+```
+
+Verbose and quiet are mutually exclusive. If both are specified, verbose takes precedence.
+
 ## Getting Help
 
 Each command supports the `--help` flag:

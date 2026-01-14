@@ -10,6 +10,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/logging"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
@@ -116,7 +117,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 		fmt.Println("Importing tags and releases...")
 		err = rs.importTags(ctx, owner, repo)
 		if err != nil {
-			fmt.Printf("Warning: failed to import tags: %v\n", err)
+			logging.Warn("Failed to import tags", "error", err)
 		}
 	}
 
@@ -287,7 +288,7 @@ func (rs *RepoSyncer) importCommitHistory(ctx context.Context, owner, repo strin
 			// Store Git SHA1 → Ivaldi BLAKE3 mapping
 			err = refsManager.PutGitMapping(gitCommit.ID, commitHash)
 			if err != nil {
-				fmt.Printf("\nWarning: failed to store Git mapping for %s: %v\n", gitCommit.ID, err)
+				logging.Warn("Failed to store Git mapping", "commit", gitCommit.ID, "error", err)
 			}
 
 			// Update timeline with this commit
@@ -402,7 +403,7 @@ func (rs *RepoSyncer) importTags(ctx context.Context, owner, repo string) error 
 		// Get the Ivaldi commit hash for this Git commit
 		ivaldiHash, err := refsManager.GetGitMapping(tag.Commit.ID)
 		if err != nil {
-			fmt.Printf("Warning: tag '%s' points to commit %s which was not imported, skipping\n", tag.Name, tag.Commit.ID[:7])
+			logging.Warn("Tag points to unimported commit, skipping", "tag", tag.Name, "commit", tag.Commit.ID[:7])
 			continue
 		}
 
@@ -419,7 +420,7 @@ func (rs *RepoSyncer) importTags(ctx context.Context, owner, repo string) error 
 			fmt.Sprintf("Tag: %s", tag.Name),
 		)
 		if err != nil {
-			fmt.Printf("Warning: failed to create tag '%s': %v\n", tag.Name, err)
+			logging.Warn("Failed to create tag", "tag", tag.Name, "error", err)
 			continue
 		}
 
@@ -529,7 +530,7 @@ func (rs *RepoSyncer) downloadFiles(ctx context.Context, owner, repo string, tre
 	}
 
 	if len(downloadErrors) > 0 {
-		fmt.Printf("\nWarning: %d download errors occurred\n", len(downloadErrors))
+		logging.Warn("Download errors occurred", "count", len(downloadErrors))
 		if len(downloadErrors) <= 3 {
 			for _, err := range downloadErrors {
 				fmt.Printf("  - %v\n", err)
