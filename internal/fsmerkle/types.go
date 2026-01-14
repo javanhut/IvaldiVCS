@@ -138,16 +138,16 @@ func (b *BlobNode) CanonicalBytes() []byte {
 }
 
 // Hash computes the BLAKE3 hash of the blob's canonical representation plus content.
-func (b *BlobNode) Hash(content []byte) Hash {
+func (b *BlobNode) Hash(content []byte) (Hash, error) {
 	if len(content) != b.Size {
-		panic(fmt.Sprintf("content size mismatch: expected %d, got %d", b.Size, len(content)))
+		return Hash{}, fmt.Errorf("content size mismatch: expected %d, got %d", b.Size, len(content))
 	}
 
 	var buf bytes.Buffer
 	buf.Write(b.CanonicalBytes())
 	buf.Write(content)
 
-	return blake3.Sum256(buf.Bytes())
+	return blake3.Sum256(buf.Bytes()), nil
 }
 
 // CanonicalBytes returns the canonical byte representation of a TreeNode.

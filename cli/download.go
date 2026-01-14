@@ -142,7 +142,9 @@ func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory b
 	cleanup := func() {
 		if createdDir {
 			// Change back to original directory first
-			os.Chdir(originalDir)
+			if err := os.Chdir(originalDir); err != nil {
+				log.Printf("Warning: failed to change back to original directory: %v", err)
+			}
 			// Remove the target directory
 			if err := os.RemoveAll(filepath.Join(originalDir, targetDir)); err != nil {
 				log.Printf("Warning: Failed to cleanup directory '%s': %v", targetDir, err)
@@ -323,7 +325,9 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string, depth in
 	// Cleanup function to remove directory on failure
 	cleanup := func() {
 		if createdDir {
-			os.Chdir(originalDir)
+			if err := os.Chdir(originalDir); err != nil {
+				log.Printf("Warning: failed to change back to original directory: %v", err)
+			}
 			if err := os.RemoveAll(filepath.Join(originalDir, targetDir)); err != nil {
 				log.Printf("Warning: Failed to cleanup directory '%s': %v", targetDir, err)
 			} else {
@@ -450,7 +454,9 @@ func handleGenericGitDownload(rawURL string, args []string, depth int, skipHisto
 	// Cleanup function to remove directory on failure
 	cleanup := func() {
 		if createdDir {
-			os.Chdir(originalDir)
+			if err := os.Chdir(originalDir); err != nil {
+				log.Printf("Warning: failed to change back to original directory: %v", err)
+			}
 			if err := os.RemoveAll(filepath.Join(originalDir, targetDir)); err != nil {
 				log.Printf("Warning: Failed to cleanup directory '%s': %v", targetDir, err)
 			} else {
@@ -727,26 +733,9 @@ Use --with-history to download full commit history (requires API, subject to rat
 			return handleGenericGitDownload(url, args, depth, skipHistory, includeTags, username, password, token, sshKey)
 		}
 
-		// Standard Ivaldi remote download
-		targetDir := ""
-		if len(args) > 1 {
-			targetDir = args[1]
-		} else {
-			// Extract directory name from URL
-			parts := strings.Split(strings.TrimSuffix(url, "/"), "/")
-			targetDir = strings.TrimSuffix(parts[len(parts)-1], ".git")
-		}
-
-		// Check if directory already exists
-		if _, err := os.Stat(targetDir); !os.IsNotExist(err) {
-			return fmt.Errorf("directory '%s' already exists", targetDir)
-		}
-
-		// TODO: Implement actual download/clone functionality for standard Ivaldi remotes
-		fmt.Printf("Downloading repository from '%s' into '%s'...\n", url, targetDir)
-		fmt.Println("Note: Standard Ivaldi remote download functionality not yet implemented.")
-
-		return nil
+		// Treat unrecognized URLs as generic Git URLs - most URLs are Git-compatible
+		// This handles self-hosted Git servers, file:// URLs, and other Git transports
+		return handleGenericGitDownload(url, args, depth, skipHistory, includeTags, username, password, token, sshKey)
 	},
 }
 

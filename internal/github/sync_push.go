@@ -235,7 +235,7 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 	}
 
 	if len(errors) > 0 {
-		return nil, fmt.Errorf("failed to upload %d files: %v", len(errors), errors[0])
+		return nil, fmt.Errorf("failed to upload %d files: %w", len(errors), errors[0])
 	}
 
 	// NOTE: When using base_tree for delta uploads, deletions are handled automatically

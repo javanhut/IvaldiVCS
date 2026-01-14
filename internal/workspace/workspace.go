@@ -16,6 +16,7 @@ package workspace
 import (
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,7 +215,10 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 		if err != nil {
 			// If we can't get the base, use an empty index
 			wsBuilder := wsindex.NewBuilder(m.CAS)
-			currentTimelineBase, _ = wsBuilder.Build(nil)
+			currentTimelineBase, err = wsBuilder.Build(nil)
+			if err != nil {
+				log.Printf("Warning: could not build timeline base index: %v", err)
+			}
 		}
 
 		// ALWAYS create new auto-shelf with the CURRENT workspace state
@@ -739,7 +743,10 @@ func (sm *StashManager) CreateStash(name, description string) error {
 		fmt.Sprintf("Stash: %s - %s", name, description),
 	)
 
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to create stash tag: %w", err)
+	}
+	return nil
 }
 
 // ApplyStash applies a stash to the current workspace.

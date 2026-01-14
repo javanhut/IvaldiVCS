@@ -64,20 +64,6 @@ func NewUploadBar(total int, description string) *Bar {
 	return &Bar{bar: bar}
 }
 
-// NewSpinner creates a spinner-style progress indicator for unknown totals
-func NewSpinner(description string) *Bar {
-	bar := progressbar.NewOptions(-1,
-		progressbar.OptionSetDescription(description),
-		progressbar.OptionSetWriter(os.Stderr),
-		progressbar.OptionThrottle(65*time.Millisecond),
-		progressbar.OptionSpinnerType(14),
-		progressbar.OptionOnCompletion(func() {
-			fmt.Fprintln(os.Stderr)
-		}),
-	)
-	return &Bar{bar: bar}
-}
-
 // Increment advances the progress bar by one
 func (b *Bar) Increment() error {
 	return b.bar.Add(1)

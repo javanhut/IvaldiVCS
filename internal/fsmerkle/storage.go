@@ -101,18 +101,21 @@ func NewStore(cas CAS) *Store {
 // PutBlob implements Builder.PutBlob.
 func (s *Store) PutBlob(content []byte) (Hash, int, error) {
 	blob := &BlobNode{Size: len(content)}
-	hash := blob.Hash(content)
-	
+	hash, err := blob.Hash(content)
+	if err != nil {
+		return Hash{}, 0, fmt.Errorf("failed to hash blob: %w", err)
+	}
+
 	// Create canonical representation (header + content)
 	var buf bytes.Buffer
 	buf.Write(blob.CanonicalBytes())
 	buf.Write(content)
 	canonical := buf.Bytes()
-	
+
 	if err := s.cas.Put(hash, canonical); err != nil {
 		return Hash{}, 0, fmt.Errorf("failed to store blob: %w", err)
 	}
-	
+
 	return hash, blob.Size, nil
 }
 

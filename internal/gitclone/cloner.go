@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -96,6 +97,13 @@ func (c *Cloner) Clone(ctx context.Context, opts *CloneOptions) error {
 	repo, err := git.PlainCloneContext(ctx, tempDir, false, cloneOpts)
 	if err != nil {
 		return c.handleCloneError(err, opts.URL)
+	}
+
+	// Check if cloned repo has existing Ivaldi data
+	ivaldiSrcDir := filepath.Join(tempDir, ".ivaldi")
+	if info, err := os.Stat(ivaldiSrcDir); err == nil && info.IsDir() {
+		fmt.Println("Found existing Ivaldi data in repository")
+		return c.importExistingIvaldiData(ivaldiSrcDir, tempDir)
 	}
 
 	// Get HEAD reference
@@ -449,4 +457,203 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// copyFile copies a single file from src to dst, preserving file mode
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	sourceInfo, err := sourceFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	if _, err = io.Copy(destFile, sourceFile); err != nil {
+		return err
+	}
+
+	return os.Chmod(dst, sourceInfo.Mode())
+}
+
+// copyDir recursively copies a directory from src to dst
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		dstPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, info.Mode())
+		}
+		return copyFile(path, dstPath)
+	})
+}
+
+// importExistingIvaldiData imports an existing .ivaldi directory from a cloned repo
+// instead of converting Git commits to Ivaldi format. This preserves the original
+// Ivaldi hashes, mappings, and history.
+func (c *Cloner) importExistingIvaldiData(srcIvaldiDir, srcWorkDir string) error {
+	fmt.Println("Importing existing Ivaldi data...")
+
+	// 1. Copy objects directory (CAS store)
+	srcObjects := filepath.Join(srcIvaldiDir, "objects")
+	if info, err := os.Stat(srcObjects); err == nil && info.IsDir() {
+		dstObjects := filepath.Join(c.ivaldiDir, "objects")
+		if err := copyDir(srcObjects, dstObjects); err != nil {
+			return fmt.Errorf("failed to copy objects directory: %w", err)
+		}
+		fmt.Println("  Copied CAS objects")
+	}
+
+	// 2. Copy refs directory (timelines, tags, seals)
+	srcRefs := filepath.Join(srcIvaldiDir, "refs")
+	if info, err := os.Stat(srcRefs); err == nil && info.IsDir() {
+		dstRefs := filepath.Join(c.ivaldiDir, "refs")
+		if err := copyDir(srcRefs, dstRefs); err != nil {
+			return fmt.Errorf("failed to copy refs directory: %w", err)
+		}
+		fmt.Println("  Copied refs")
+	}
+
+	// 3. Copy objects.db (BoltDB with hash mappings and config)
+	srcDB := filepath.Join(srcIvaldiDir, "objects.db")
+	if _, err := os.Stat(srcDB); err == nil {
+		dstDB := filepath.Join(c.ivaldiDir, "objects.db")
+		if err := copyFile(srcDB, dstDB); err != nil {
+			return fmt.Errorf("failed to copy objects.db: %w", err)
+		}
+		fmt.Println("  Copied database")
+	}
+
+	// 4. Copy HEAD file
+	srcHEAD := filepath.Join(srcIvaldiDir, "HEAD")
+	if _, err := os.Stat(srcHEAD); err == nil {
+		dstHEAD := filepath.Join(c.ivaldiDir, "HEAD")
+		if err := copyFile(srcHEAD, dstHEAD); err != nil {
+			return fmt.Errorf("failed to copy HEAD: %w", err)
+		}
+		fmt.Println("  Copied HEAD")
+	}
+
+	// 5. Copy config if present
+	srcConfig := filepath.Join(srcIvaldiDir, "config")
+	if _, err := os.Stat(srcConfig); err == nil {
+		dstConfig := filepath.Join(c.ivaldiDir, "config")
+		if err := copyFile(srcConfig, dstConfig); err != nil {
+			return fmt.Errorf("failed to copy config: %w", err)
+		}
+		fmt.Println("  Copied config")
+	}
+
+	// 6. Copy MMR data if present
+	srcMMR := filepath.Join(srcIvaldiDir, "mmr.db")
+	if _, err := os.Stat(srcMMR); err == nil {
+		dstMMR := filepath.Join(c.ivaldiDir, "mmr.db")
+		if err := copyFile(srcMMR, dstMMR); err != nil {
+			return fmt.Errorf("failed to copy mmr.db: %w", err)
+		}
+		fmt.Println("  Copied MMR data")
+	}
+
+	// 7. Copy workspace files (non-.git, non-.ivaldi files)
+	err := filepath.Walk(srcWorkDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(srcWorkDir, path)
+		if err != nil {
+			return err
+		}
+
+		// Skip .git and .ivaldi directories
+		if relPath == ".git" || relPath == ".ivaldi" ||
+			strings.HasPrefix(relPath, ".git"+string(filepath.Separator)) ||
+			strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		dstPath := filepath.Join(c.workDir, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, info.Mode())
+		}
+		return copyFile(path, dstPath)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to copy workspace files: %w", err)
+	}
+	fmt.Println("  Copied workspace files")
+
+	// 8. Validate imported data
+	if err := c.validateImportedData(); err != nil {
+		return fmt.Errorf("imported Ivaldi data validation failed: %w", err)
+	}
+
+	fmt.Println("Successfully imported existing Ivaldi repository")
+	return nil
+}
+
+// validateImportedData verifies that the imported Ivaldi data is valid
+func (c *Cloner) validateImportedData() error {
+	// Reinitialize CAS to use the imported objects
+	objectsDir := filepath.Join(c.ivaldiDir, "objects")
+	casStore, err := cas.NewFileCAS(objectsDir)
+	if err != nil {
+		return fmt.Errorf("failed to open CAS: %w", err)
+	}
+	c.casStore = casStore
+
+	// Verify HEAD points to valid timeline
+	refsManager, err := refs.NewRefsManager(c.ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to open refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	timeline, err := refsManager.GetCurrentTimeline()
+	if err != nil {
+		return fmt.Errorf("no current timeline: %w", err)
+	}
+
+	// Verify latest commit exists in CAS
+	timelineInfo, err := refsManager.GetTimeline(timeline, refs.LocalTimeline)
+	if err != nil {
+		return fmt.Errorf("failed to get timeline %s: %w", timeline, err)
+	}
+
+	// If timeline has a commit, verify it exists
+	var zeroHash [32]byte
+	if timelineInfo.Blake3Hash != zeroHash {
+		var commitHash cas.Hash
+		copy(commitHash[:], timelineInfo.Blake3Hash[:])
+		if _, err := c.casStore.Get(commitHash); err != nil {
+			return fmt.Errorf("commit %x not found in CAS: %w", timelineInfo.Blake3Hash[:8], err)
+		}
+	}
+
+	return nil
 }

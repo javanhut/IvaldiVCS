@@ -249,19 +249,14 @@ func (m *MMR) leafIndexToPos(leafIdx uint64) uint64 {
 	return 2*leafIdx - popcount(leafIdx+1) + 1
 }
 
-// Popcount returns the number of set bits in x.
-func Popcount(x uint64) uint64 {
+// popcount returns the number of set bits in x.
+func popcount(x uint64) uint64 {
 	count := uint64(0)
 	for x > 0 {
 		count += x & 1
 		x >>= 1
 	}
 	return count
-}
-
-// popcount is an internal alias for Popcount
-func popcount(x uint64) uint64 {
-	return Popcount(x)
 }
 
 // getHeight returns the height of a node at the given position.

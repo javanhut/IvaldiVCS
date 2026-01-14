@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,14 +252,21 @@ func handleMerge(ivaldiDir, workDir string, casStore cas.CAS, refsManager *refs.
 	if len(targetCommit.Parents) > 0 {
 		baseCommit, err := commit.NewCommitReader(casStore).ReadCommit(targetCommit.Parents[0])
 		if err == nil {
-			baseIndex, _ = getCommitWorkspaceIndex(casStore, baseCommit)
+			baseIndex, err = getCommitWorkspaceIndex(casStore, baseCommit)
+			if err != nil {
+				log.Printf("Warning: could not get base workspace index: %v", err)
+			}
 		}
 	}
 
 	// If no base, use empty workspace
 	if baseIndex.Count == 0 {
 		wsBuilder := wsindex.NewBuilder(casStore)
-		baseIndex, _ = wsBuilder.Build(nil)
+		var err error
+		baseIndex, err = wsBuilder.Build(nil)
+		if err != nil {
+			log.Printf("Warning: could not build empty workspace index: %v", err)
+		}
 	}
 
 	// Parse merge strategy
@@ -399,7 +407,9 @@ func handleMerge(ivaldiDir, workDir string, casStore cas.CAS, refsManager *refs.
 
 	// Generate seal name
 	sealName := seals.GenerateSealName(mergeHashArray)
-	_ = refsManager.StoreSealName(sealName, mergeHashArray, fmt.Sprintf("Fuse %s into %s", sourceTimeline, targetTimeline))
+	if err := refsManager.StoreSealName(sealName, mergeHashArray, fmt.Sprintf("Fuse %s into %s", sourceTimeline, targetTimeline)); err != nil {
+		log.Printf("Warning: failed to store seal name: %v", err)
+	}
 
 	// Clean up resolution storage (merge succeeded)
 	resStorage := diffmerge.NewResolutionStorage(ivaldiDir)
@@ -647,7 +657,11 @@ func continueMerge(ivaldiDir, workDir string) error {
 		}
 		var baseCommit *commit.CommitObject
 		if len(targetCommit.Parents) > 0 {
-			baseCommit, _ = commitReader.ReadCommit(targetCommit.Parents[0])
+			var err error
+			baseCommit, err = commitReader.ReadCommit(targetCommit.Parents[0])
+			if err != nil {
+				log.Printf("Warning: could not read base commit: %v", err)
+			}
 		}
 
 		// Resolve each conflicting file interactively
@@ -781,7 +795,9 @@ func continueMerge(ivaldiDir, workDir string) error {
 
 	// Generate seal name
 	sealName := seals.GenerateSealName(mergeHashArray)
-	_ = refsManager.StoreSealName(sealName, mergeHashArray, fmt.Sprintf("Fuse %s into %s", state.SourceTimeline, state.TargetTimeline))
+	if err := refsManager.StoreSealName(sealName, mergeHashArray, fmt.Sprintf("Fuse %s into %s", state.SourceTimeline, state.TargetTimeline)); err != nil {
+		log.Printf("Warning: failed to store seal name: %v", err)
+	}
 
 	// Clean up merge state
 	os.Remove(filepath.Join(ivaldiDir, "MERGE_HEAD"))

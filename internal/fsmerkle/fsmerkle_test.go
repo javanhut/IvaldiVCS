@@ -20,8 +20,14 @@ func TestBlobNode(t *testing.T) {
 	}
 
 	// Test hashing
-	hash1 := blob.Hash(content)
-	hash2 := blob.Hash(content)
+	hash1, err := blob.Hash(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hash2, err := blob.Hash(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if hash1 != hash2 {
 		t.Error("Same blob should produce same hash")
 	}
@@ -29,21 +35,21 @@ func TestBlobNode(t *testing.T) {
 	// Test with different content should produce different hash
 	otherContent := []byte("Different content")
 	otherBlob := &BlobNode{Size: len(otherContent)}
-	otherHash := otherBlob.Hash(otherContent)
+	otherHash, err := otherBlob.Hash(otherContent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if hash1 == otherHash {
 		t.Error("Different blobs should produce different hashes")
 	}
 }
 
-func TestBlobNodePanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic for content size mismatch")
-		}
-	}()
-	
+func TestBlobNodeSizeMismatch(t *testing.T) {
 	blob := &BlobNode{Size: 5}
-	blob.Hash([]byte("too long content"))
+	_, err := blob.Hash([]byte("too long content"))
+	if err == nil {
+		t.Error("Expected error for content size mismatch")
+	}
 }
 
 func TestTreeNode(t *testing.T) {
@@ -348,8 +354,14 @@ func TestHashStability(t *testing.T) {
 	content := []byte("stable content")
 	blob := &BlobNode{Size: len(content)}
 
-	hash1 := blob.Hash(content)
-	hash2 := blob.Hash(content)
+	hash1, err := blob.Hash(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hash2, err := blob.Hash(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if hash1 != hash2 {
 		t.Error("Hash should be stable for same input")

@@ -11,12 +11,10 @@
 package seals
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math/rand"
-	"strings"
 	"time"
 )
 
@@ -96,116 +94,3 @@ func GenerateSealName(hash [32]byte) string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", adj, noun, verb, adv, shortHash)
 }
 
-// GenerateCustomSealName creates a seal name with user-provided base and hash suffix
-func GenerateCustomSealName(customName string, hash [32]byte) string {
-	// Sanitize custom name (replace spaces with dashes, lowercase)
-	sanitized := strings.ToLower(strings.ReplaceAll(customName, " ", "-"))
-	// Remove any non-alphanumeric characters except dashes
-	var result strings.Builder
-	for _, r := range sanitized {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			result.WriteRune(r)
-		}
-	}
-
-	shortHash := hex.EncodeToString(hash[:4])
-	return fmt.Sprintf("%s-%s", result.String(), shortHash)
-}
-
-// ParseSealName extracts components from a seal name
-func ParseSealName(name string) (adjective, noun, verb, adverb, shortHash string, isValid bool) {
-	parts := strings.Split(name, "-")
-	if len(parts) < 2 {
-		return "", "", "", "", "", false
-	}
-
-	// For auto-generated names, expect 5 parts
-	if len(parts) == 5 {
-		return parts[0], parts[1], parts[2], parts[3], parts[4], true
-	}
-
-	// For custom names, the last part should be the hash
-	lastPart := parts[len(parts)-1]
-	if len(lastPart) == 8 {
-		// Check if last part is a valid hex string
-		if _, err := hex.DecodeString(lastPart); err == nil {
-			baseName := strings.Join(parts[:len(parts)-1], "-")
-			return baseName, "", "", "", lastPart, true
-		}
-	}
-
-	return "", "", "", "", "", false
-}
-
-// GetShortHashFromName extracts the 8-character hash from a seal name
-func GetShortHashFromName(name string) (string, bool) {
-	parts := strings.Split(name, "-")
-	if len(parts) < 2 {
-		return "", false
-	}
-
-	lastPart := parts[len(parts)-1]
-	if len(lastPart) == 8 {
-		if _, err := hex.DecodeString(lastPart); err == nil {
-			return lastPart, true
-		}
-	}
-
-	return "", false
-}
-
-// ValidateSealName checks if a seal name follows the expected format
-func ValidateSealName(name string) bool {
-	_, _, _, _, _, valid := ParseSealName(name)
-	return valid
-}
-
-// GetBaseName returns the name without the hash suffix
-func GetBaseName(name string) string {
-	parts := strings.Split(name, "-")
-	if len(parts) < 2 {
-		return name
-	}
-
-	lastPart := parts[len(parts)-1]
-	if len(lastPart) == 8 {
-		if _, err := hex.DecodeString(lastPart); err == nil {
-			return strings.Join(parts[:len(parts)-1], "-")
-		}
-	}
-
-	return name
-}
-
-// GenerateTestHash creates a test hash for development purposes
-func GenerateTestHash(input string) [32]byte {
-	hash := sha256.Sum256([]byte(input))
-	var result [32]byte
-	copy(result[:], hash[:])
-	return result
-}
-
-// SealNameGenerator provides methods for creating and managing seal names
-type SealNameGenerator struct {
-	// Can be extended with configuration options later
-}
-
-// NewSealNameGenerator creates a new seal name generator
-func NewSealNameGenerator() *SealNameGenerator {
-	return &SealNameGenerator{}
-}
-
-// Generate creates a new seal name from a hash
-func (g *SealNameGenerator) Generate(hash [32]byte) string {
-	return GenerateSealName(hash)
-}
-
-// GenerateCustom creates a seal name with user-provided base
-func (g *SealNameGenerator) GenerateCustom(customName string, hash [32]byte) string {
-	return GenerateCustomSealName(customName, hash)
-}
-
-// Validate checks if a seal name is valid
-func (g *SealNameGenerator) Validate(name string) bool {
-	return ValidateSealName(name)
-}

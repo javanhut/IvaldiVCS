@@ -103,7 +103,7 @@ func LoadConfig() (*Config, error) {
 func SaveGlobalConfig(cfg *Config) error {
 	globalPath, err := globalConfigPath()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get global config path: %w", err)
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -265,7 +265,10 @@ func SetValue(key, value string, global bool) error {
 		err = SaveRepoConfig(cfg)
 	}
 
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	return nil
 }
 
 // GetAuthor returns the formatted author string "Name <email>"

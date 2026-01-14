@@ -38,7 +38,9 @@ func BenchmarkBlobHashing(b *testing.B) {
 			
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = blob.Hash(content)
+				if _, err := blob.Hash(content); err != nil {
+					b.Fatal(err)
+				}
 			}
 			b.SetBytes(int64(size))
 		})

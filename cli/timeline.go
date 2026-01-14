@@ -27,6 +27,7 @@ var timelineCmd = &cobra.Command{
 
 var createTimelineCmd = &cobra.Command{
 	Use:   "create <name>",
+	Aliases: []string{"cr"},
 	Short: "Create a new timeline",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -75,11 +76,17 @@ var createTimelineCmd = &cobra.Command{
 				if err == nil && currentTimelineRef.Blake3Hash != [32]byte{} {
 					// Timeline has commits, get its committed state
 					wsBuilder := wsindex.NewBuilder(casStore)
-					currentBaseIndex, _ = wsBuilder.Build(nil) // Simplified - should read actual commit
+					currentBaseIndex, err = wsBuilder.Build(nil) // Simplified - should read actual commit
+					if err != nil {
+						log.Printf("Warning: could not build workspace index: %v", err)
+					}
 				} else {
 					// No commits, use empty base
 					wsBuilder := wsindex.NewBuilder(casStore)
-					currentBaseIndex, _ = wsBuilder.Build(nil)
+					currentBaseIndex, err = wsBuilder.Build(nil)
+					if err != nil {
+						log.Printf("Warning: could not build workspace index: %v", err)
+					}
 				}
 
 				// Create auto-shelf for current timeline BEFORE creating new timeline
@@ -186,13 +193,19 @@ var listTimelineCmd = &cobra.Command{
 
 		// Initialize butterfly manager for timeline listing
 		objectsDir := filepath.Join(ivaldiDir, "objects")
-		casStore, _ := cas.NewFileCAS(objectsDir)
+		casStore, err := cas.NewFileCAS(objectsDir)
+		if err != nil {
+			log.Printf("Warning: could not initialize CAS store: %v", err)
+		}
 		var bfManager *butterfly.Manager
 		if casStore != nil {
 			mmr, err := history.NewPersistentMMR(casStore, ivaldiDir)
 			if err == nil {
 				defer mmr.Close()
-				bfManager, _ = butterfly.NewManager(ivaldiDir, casStore, refsManager, mmr)
+				bfManager, err = butterfly.NewManager(ivaldiDir, casStore, refsManager, mmr)
+				if err != nil {
+					log.Printf("Warning: could not initialize butterfly manager: %v", err)
+				}
 				if bfManager != nil {
 					defer bfManager.Close()
 				}

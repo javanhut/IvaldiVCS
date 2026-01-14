@@ -21,7 +21,9 @@ var words = []string{
 
 func randUint32() uint32 {
 	var b [4]byte
-	_, _ = rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return binary.LittleEndian.Uint32(b[:])
 }
 
