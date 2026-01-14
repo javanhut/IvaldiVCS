@@ -291,43 +291,6 @@ func isGitLabURL(rawURL string) bool {
 	return false
 }
 
-// parseGitLabURL extracts owner and repo from various GitLab URL formats
-func parseGitLabURL(rawURL string) (owner, repo string, err error) {
-	// Remove .git suffix if present
-	rawURL = strings.TrimSuffix(rawURL, ".git")
-
-	// Handle full URLs
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		// Try adding https:// if not present
-		if !strings.HasPrefix(rawURL, "http") && !strings.HasPrefix(rawURL, "git@") {
-			parsedURL, err = url.Parse("https://" + rawURL)
-			if err != nil {
-				return "", "", fmt.Errorf("invalid URL: %s", rawURL)
-			}
-		} else if strings.HasPrefix(rawURL, "git@gitlab.com:") {
-			// Handle git@gitlab.com:owner/repo format
-			path := strings.TrimPrefix(rawURL, "git@gitlab.com:")
-			parts := strings.Split(path, "/")
-			if len(parts) == 2 {
-				return parts[0], parts[1], nil
-			}
-			return "", "", fmt.Errorf("invalid git URL format: %s", rawURL)
-		} else {
-			return "", "", err
-		}
-	}
-
-	// Extract path and parse owner/repo
-	path := strings.TrimPrefix(parsedURL.Path, "/")
-	parts := strings.Split(path, "/")
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("invalid GitLab URL format: %s", rawURL)
-	}
-
-	return parts[0], parts[1], nil
-}
-
 // handleGitLabDownload handles downloading/cloning from GitLab
 func handleGitLabDownload(rawURL string, args []string, baseURL string, depth int, skipHistory bool, includeTags bool) error {
 	// Parse GitLab URL with host detection

@@ -18,14 +18,6 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
 )
 
-// commitDownloadResult holds the downloaded state for a commit
-type commitDownloadResult struct {
-	commit         *Commit
-	tree           *Tree
-	workspaceFiles []wsindex.FileMetadata
-	err            error
-}
-
 // importCommitHistory imports Git commits as Ivaldi commits in chronological order
 func (rs *RepoSyncer) importCommitHistory(ctx context.Context, owner, repo string, commits []*Commit) error {
 	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
@@ -242,67 +234,6 @@ func (rs *RepoSyncer) importCommitHistory(ctx context.Context, owner, repo strin
 
 	progressBar.Finish()
 	fmt.Printf("Successfully imported %d commits\n\n", totalCommits)
-	return nil
-}
-
-// downloadFilesQuiet downloads files without progress output
-func (rs *RepoSyncer) downloadFilesQuiet(ctx context.Context, owner, repo string, tree *Tree, ref string) error {
-	var filesToDownload []TreeEntry
-	for _, entry := range tree.Tree {
-		if entry.Type == "blob" {
-			localPath := filepath.Join(rs.workDir, entry.Path)
-			if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
-				continue
-			}
-			filesToDownload = append(filesToDownload, entry)
-		}
-	}
-
-	if len(filesToDownload) == 0 {
-		return nil
-	}
-
-	workers := 8
-	if len(filesToDownload) > 100 {
-		workers = 16
-	}
-	if len(filesToDownload) > 500 {
-		workers = 32
-	}
-
-	jobs := make(chan TreeEntry, len(filesToDownload))
-	errors := make(chan error, len(filesToDownload))
-	var wg sync.WaitGroup
-
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for entry := range jobs {
-				if err := rs.downloadFile(ctx, owner, repo, entry, ref); err != nil {
-					errors <- fmt.Errorf("failed to download %s: %w", entry.Path, err)
-				}
-			}
-		}()
-	}
-
-	for _, entry := range filesToDownload {
-		jobs <- entry
-	}
-	close(jobs)
-
-	wg.Wait()
-	close(errors)
-
-	var downloadErrors []error
-	for err := range errors {
-		downloadErrors = append(downloadErrors, err)
-	}
-
-	if len(downloadErrors) > 0 {
-		return fmt.Errorf("failed to download %d files", len(downloadErrors))
-	}
-
 	return nil
 }
 

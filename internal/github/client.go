@@ -918,9 +918,7 @@ func (c *Client) ListTags(ctx context.Context, owner, repo string) ([]*Tag, erro
 		}
 		resp.Body.Close()
 
-		for _, tag := range pageTags {
-			tags = append(tags, tag)
-		}
+		tags = append(tags, pageTags...)
 
 		if len(pageTags) < perPage {
 			break
