@@ -6,11 +6,283 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/spf13/cobra"
 )
+
+// PatternCache holds pre-compiled ignore patterns for fast matching
+type PatternCache struct {
+	patterns       []string
+	dirPatterns    []string // Patterns ending with /
+	globPatterns   []string // Patterns with wildcards
+	literalMatches map[string]bool
+}
+
+// NewPatternCache creates a pattern cache from a list of patterns
+func NewPatternCache(patterns []string) *PatternCache {
+	cache := &PatternCache{
+		patterns:       patterns,
+		literalMatches: make(map[string]bool),
+	}
+
+	for _, pattern := range patterns {
+		if strings.HasSuffix(pattern, "/") {
+			cache.dirPatterns = append(cache.dirPatterns, strings.TrimSuffix(pattern, "/"))
+		} else if strings.ContainsAny(pattern, "*?[") {
+			cache.globPatterns = append(cache.globPatterns, pattern)
+		} else {
+			cache.literalMatches[pattern] = true
+		}
+	}
+
+	return cache
+}
+
+// IsIgnored checks if a path matches any cached pattern
+func (pc *PatternCache) IsIgnored(path string) bool {
+	if path == ".ivaldiignore" || filepath.Base(path) == ".ivaldiignore" {
+		return false
+	}
+
+	baseName := filepath.Base(path)
+
+	// Fast literal match check
+	if pc.literalMatches[path] || pc.literalMatches[baseName] {
+		return true
+	}
+
+	// Check directory patterns
+	for _, dirPattern := range pc.dirPatterns {
+		if strings.HasPrefix(path, dirPattern+"/") || path == dirPattern {
+			return true
+		}
+	}
+
+	// Check glob patterns
+	for _, pattern := range pc.globPatterns {
+		// Try matching the full path
+		if matched, _ := filepath.Match(pattern, path); matched {
+			return true
+		}
+		// Try matching just the basename
+		if matched, _ := filepath.Match(pattern, baseName); matched {
+			return true
+		}
+		// Handle ** patterns
+		if strings.Contains(pattern, "**") {
+			parts := strings.Split(pattern, "**")
+			if len(parts) == 2 {
+				prefix := strings.TrimPrefix(parts[0], "/")
+				suffix := strings.TrimPrefix(parts[1], "/")
+
+				if prefix != "" && !strings.HasPrefix(path, prefix) {
+					continue
+				}
+
+				if suffix != "" {
+					if matched, _ := filepath.Match(suffix, baseName); matched {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// fileResult holds a file path discovered during parallel walking
+type fileResult struct {
+	path string
+	err  error
+}
+
+// dirJob represents a directory to be processed
+type dirJob struct {
+	path string
+}
+
+// parallelWalker performs parallel directory traversal
+type parallelWalker struct {
+	workDir       string
+	allowAll      bool
+	patternCache  *PatternCache
+	results       chan fileResult
+	jobs          chan dirJob
+	wg            sync.WaitGroup
+	workerCount   int
+	dotFileAsks   chan string
+	dotFileResult chan bool
+}
+
+// newParallelWalker creates a new parallel walker
+func newParallelWalker(workDir string, allowAll bool, patternCache *PatternCache) *parallelWalker {
+	workerCount := runtime.NumCPU()
+	if workerCount < 4 {
+		workerCount = 4
+	}
+
+	return &parallelWalker{
+		workDir:       workDir,
+		allowAll:      allowAll,
+		patternCache:  patternCache,
+		results:       make(chan fileResult, 1000),
+		jobs:          make(chan dirJob, 1000),
+		workerCount:   workerCount,
+		dotFileAsks:   make(chan string),
+		dotFileResult: make(chan bool),
+	}
+}
+
+// walk performs the parallel directory walk
+func (pw *parallelWalker) walk() []string {
+	// Start workers
+	for i := 0; i < pw.workerCount; i++ {
+		pw.wg.Add(1)
+		go pw.worker()
+	}
+
+	// Start with root directory
+	pw.jobs <- dirJob{path: pw.workDir}
+
+	// Start collector goroutine
+	var files []string
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	go func() {
+		for result := range pw.results {
+			if result.err != nil {
+				log.Printf("Warning: %v", result.err)
+				continue
+			}
+			mu.Lock()
+			files = append(files, result.path)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
+	// Handle dot file prompts in main goroutine (for user interaction)
+	go func() {
+		for path := range pw.dotFileAsks {
+			pw.dotFileResult <- shouldGatherDotFile(path)
+		}
+	}()
+
+	// Wait for all workers to finish
+	pw.wg.Wait()
+	close(pw.jobs)
+	close(pw.results)
+	close(pw.dotFileAsks)
+
+	<-done
+
+	return files
+}
+
+// worker processes directory jobs
+func (pw *parallelWalker) worker() {
+	defer pw.wg.Done()
+
+	for job := range pw.jobs {
+		pw.processDir(job.path)
+	}
+}
+
+// processDir processes a single directory
+func (pw *parallelWalker) processDir(dirPath string) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		pw.results <- fileResult{err: fmt.Errorf("failed to read directory %s: %w", dirPath, err)}
+		return
+	}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(dirPath, entry.Name())
+		relPath, err := filepath.Rel(pw.workDir, fullPath)
+		if err != nil {
+			continue
+		}
+
+		if entry.IsDir() {
+			// Skip .ivaldi directory
+			if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+				continue
+			}
+
+			// Check if directory is auto-excluded
+			if isAutoExcluded(relPath) {
+				log.Printf("Auto-excluded directory for security: %s", relPath)
+				continue
+			}
+
+			// Check if directory matches ignore patterns
+			if pw.patternCache.IsIgnored(relPath) || pw.patternCache.IsIgnored(relPath+"/") {
+				log.Printf("Skipping ignored directory: %s", relPath)
+				continue
+			}
+
+			// Check for hidden directories
+			if entry.Name()[0] == '.' && relPath != "." {
+				if !pw.allowAll {
+					log.Printf("Skipping hidden directory: %s", relPath)
+					continue
+				}
+			}
+
+			// Queue subdirectory for processing
+			select {
+			case pw.jobs <- dirJob{path: fullPath}:
+				pw.wg.Add(1)
+			default:
+				// If channel is full, process synchronously
+				pw.processDir(fullPath)
+			}
+		} else {
+			// Process file
+			pw.processFile(relPath, entry.Name())
+		}
+	}
+}
+
+// processFile processes a single file
+func (pw *parallelWalker) processFile(relPath, baseName string) {
+	// Skip .ivaldi directory files
+	if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
+		return
+	}
+
+	// Check if file is auto-excluded
+	if isAutoExcluded(relPath) {
+		log.Printf("Auto-excluded for security: %s", relPath)
+		return
+	}
+
+	// Skip hidden files EXCEPT .ivaldiignore
+	if baseName[0] == '.' && relPath != ".ivaldiignore" {
+		if !pw.allowAll {
+			// For dot files, we need to ask the user (done synchronously via channel)
+			pw.dotFileAsks <- relPath
+			if <-pw.dotFileResult {
+				pw.results <- fileResult{path: relPath}
+			}
+			return
+		}
+		fmt.Printf("Warning: Gathering hidden file: %s\n", relPath)
+	}
+
+	// Skip ignored files
+	if pw.patternCache.IsIgnored(relPath) {
+		return
+	}
+
+	pw.results <- fileResult{path: relPath}
+}
 
 // Auto-excluded patterns that are always ignored for security
 var autoExcludePatterns = []string{
@@ -42,11 +314,12 @@ var gatherCmd = &cobra.Command{
 			return fmt.Errorf("failed to get allow-all flag: %w", err)
 		}
 
-		// Load ignore patterns from .ivaldiignore
+		// Load ignore patterns from .ivaldiignore and create pattern cache
 		ignorePatterns, err := loadIgnorePatternsForGather(workDir)
 		if err != nil {
 			log.Printf("Warning: Failed to load ignore patterns: %v", err)
 		}
+		patternCache := NewPatternCache(ignorePatterns)
 
 		// Create staging area directory
 		stageDir := filepath.Join(ivaldiDir, "stage")
@@ -57,89 +330,12 @@ var gatherCmd = &cobra.Command{
 		var filesToGather []string
 
 		if len(args) == 0 {
-			// If no arguments, gather all modified files
+			// If no arguments, gather all files using parallel walker
 			fmt.Println("No files specified, gathering all files in working directory...")
-			err := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
-				if err != nil {
-					return err
-				}
 
-				// Get relative path
-				relPath, err := filepath.Rel(workDir, path)
-				if err != nil {
-					return err
-				}
-
-				// Handle directories - check exclusions BEFORE deciding to skip
-				if info.IsDir() {
-					// Skip .ivaldi directory
-					if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
-						return filepath.SkipDir
-					}
-
-					// Check if directory is auto-excluded
-					if isAutoExcluded(relPath) {
-						log.Printf("Auto-excluded directory for security: %s", relPath)
-						return filepath.SkipDir
-					}
-
-					// Check if directory matches ignore patterns
-					// Try both with and without trailing slash
-					if isFileIgnored(relPath, ignorePatterns) || isFileIgnored(relPath+"/", ignorePatterns) {
-						log.Printf("Skipping ignored directory: %s", relPath)
-						return filepath.SkipDir
-					}
-
-					// Check for hidden directories (except .ivaldiignore parent)
-					if filepath.Base(path)[0] == '.' && relPath != "." {
-						if !allowAll {
-							log.Printf("Skipping hidden directory: %s", relPath)
-							return filepath.SkipDir
-						}
-					}
-
-					// Directory is not excluded, continue into it
-					return nil
-				}
-
-				// From here on, we're dealing with files only
-
-				// Skip .ivaldi directory files (shouldn't happen but just in case)
-				if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
-					return nil
-				}
-
-				// Check if file is auto-excluded (.env, .venv, etc.)
-				if isAutoExcluded(relPath) {
-					log.Printf("Auto-excluded for security: %s", relPath)
-					return nil
-				}
-
-				// Skip hidden files EXCEPT .ivaldiignore
-				if filepath.Base(path)[0] == '.' && relPath != ".ivaldiignore" {
-					// Prompt user for dot files unless --allow-all is set
-					if !allowAll {
-						if shouldGatherDotFile(relPath) {
-							filesToGather = append(filesToGather, relPath)
-						}
-						return nil
-					} else {
-						// With --allow-all, still warn about dot files
-						fmt.Printf("Warning: Gathering hidden file: %s\n", relPath)
-					}
-				}
-
-				// Skip ignored files (but never ignore .ivaldiignore itself)
-				if isFileIgnored(relPath, ignorePatterns) {
-					return nil
-				}
-
-				filesToGather = append(filesToGather, relPath)
-				return nil
-			})
-			if err != nil {
-				return fmt.Errorf("failed to walk directory: %w", err)
-			}
+			// Use parallel walker for better performance
+			walker := newParallelWalker(workDir, allowAll, patternCache)
+			filesToGather = walker.walk()
 		} else {
 			// Use specified files
 			for _, arg := range args {
@@ -182,7 +378,7 @@ var gatherCmd = &cobra.Command{
 							}
 
 							// Check if directory matches ignore patterns
-							if isFileIgnored(relPath, ignorePatterns) || isFileIgnored(relPath+"/", ignorePatterns) {
+							if patternCache.IsIgnored(relPath) || patternCache.IsIgnored(relPath+"/") {
 								log.Printf("Skipping ignored directory: %s", relPath)
 								return filepath.SkipDir
 							}
@@ -230,7 +426,7 @@ var gatherCmd = &cobra.Command{
 						}
 
 						// Skip ignored files (but never ignore .ivaldiignore itself)
-						if isFileIgnored(relPath, ignorePatterns) {
+						if patternCache.IsIgnored(relPath) {
 							log.Printf("Skipping ignored file: %s", relPath)
 							return nil
 						}
@@ -267,7 +463,7 @@ var gatherCmd = &cobra.Command{
 					}
 
 					// Check if file is ignored
-					if isFileIgnored(relPath, ignorePatterns) {
+					if patternCache.IsIgnored(relPath) {
 						log.Printf("Warning: File '%s' is in .ivaldiignore, skipping", relPath)
 						continue
 					}
