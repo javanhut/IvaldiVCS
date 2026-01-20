@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -212,9 +211,4 @@ func SubmoduleToConfig(sub *Submodule) Config {
 		Shallow:   sub.Shallow,
 		Freeze:    sub.Freeze,
 	}
-}
-
-func ParseBool(s string) bool {
-	b, _ := strconv.ParseBool(s)
-	return b
 }

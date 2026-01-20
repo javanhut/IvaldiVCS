@@ -8,7 +8,6 @@
 package colors
 
 import (
-	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -170,51 +169,6 @@ func Dim(text string) string {
 		return text
 	}
 	return ColorDim + text + ColorReset
-}
-
-// Status prefixes with colors
-func AddedPrefix() string {
-	return Added("A")
-}
-
-func ModifiedPrefix() string {
-	return Modified("M")
-}
-
-func DeletedPrefix() string {
-	return Deleted("D")
-}
-
-func UntrackedPrefix() string {
-	return Untracked("?")
-}
-
-func IgnoredPrefix() string {
-	return Ignored("!")
-}
-
-func StagedPrefix() string {
-	return Staged("S")
-}
-
-// Colorize file status text with appropriate prefix
-func ColorizeFileStatus(status, filePath string) string {
-	switch strings.ToLower(status) {
-	case "added", "new file":
-		return fmt.Sprintf("  %s  %s", AddedPrefix(), Green(filePath))
-	case "modified":
-		return fmt.Sprintf("  %s  %s", ModifiedPrefix(), Blue(filePath))
-	case "deleted":
-		return fmt.Sprintf("  %s  %s", DeletedPrefix(), Red(filePath))
-	case "untracked":
-		return fmt.Sprintf("  %s  %s", UntrackedPrefix(), Yellow(filePath))
-	case "ignored":
-		return fmt.Sprintf("  %s  %s", IgnoredPrefix(), Gray(filePath))
-	case "staged":
-		return fmt.Sprintf("  %s  %s", StagedPrefix(), Green(filePath))
-	default:
-		return fmt.Sprintf("     %s", filePath)
-	}
 }
 
 // Section headers with colors

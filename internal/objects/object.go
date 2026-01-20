@@ -116,33 +116,6 @@ type DualDigest struct {
 	Size   int
 }
 
-// DigestsFromZstdGitBlob returns both canonical digests from a zstd blob.
-func DigestsFromZstdGitBlob(r io.Reader) (*DualDigest, error) {
-	blob, err := DecodeZstdGitBlob(r)
-	if err != nil {
-		return nil, err
-	}
-	return &DualDigest{
-		SHA256: HashBlobSHA256(blob.Content),
-		BLAKE3: HashBlobBLAKE3(blob.Content),
-		Size:   blob.Size,
-	}, nil
-}
-
-// ConvertZstdBlobToBLAKE3 re-hashes content as BLAKE3.
-func ConvertZstdBlobToBLAKE3(r io.Reader) (content []byte, blake3Sum [32]byte, err error) {
-	blob, err := DecodeZstdGitBlob(r)
-	if err != nil {
-		return nil, [32]byte{}, err
-	}
-	return blob.Content, HashBlobBLAKE3(blob.Content), nil
-}
-
-// ConvertContentBLAKE3ToSHA256 re-hashes content as SHA-256.
-func ConvertContentBLAKE3ToSHA256(content []byte) [32]byte {
-	return HashBlobSHA256(content)
-}
-
 // ---------------------------
 // Small helpers
 // ---------------------------

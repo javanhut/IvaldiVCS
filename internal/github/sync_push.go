@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
@@ -24,12 +25,32 @@ type FileChange struct {
 	Type    string // "added", "modified", "deleted"
 }
 
-// computeFileDeltas compares two commits and returns changed files
+// fileHashJob represents a job to compute file hash
+type fileHashJob struct {
+	filePath string
+	tree     *commit.TreeObject
+}
+
+// fileHashResult represents the result of a hash computation
+type fileHashResult struct {
+	filePath string
+	hash     cas.Hash
+	content  []byte
+	err      error
+}
+
+// computeFileDeltas compares two commits and returns changed files using parallel hash computation
 func (rs *RepoSyncer) computeFileDeltas(parentHash, currentHash cas.Hash) ([]FileChange, error) {
 	commitReader := commit.NewCommitReader(rs.casStore)
 
+	// Determine worker count
+	workerCount := runtime.NumCPU()
+	if workerCount < 4 {
+		workerCount = 4
+	}
+
 	// Read parent commit and tree
-	var parentFiles map[string]cas.Hash
+	var parentFiles sync.Map // map[string]cas.Hash
 	if parentHash != (cas.Hash{}) {
 		parentCommit, err := commitReader.ReadCommit(parentHash)
 		if err != nil {
@@ -46,16 +67,49 @@ func (rs *RepoSyncer) computeFileDeltas(parentHash, currentHash cas.Hash) ([]Fil
 			return nil, fmt.Errorf("failed to list parent files: %w", err)
 		}
 
-		parentFiles = make(map[string]cas.Hash)
-		for _, filePath := range parentFileList {
-			content, err := commitReader.GetFileContent(parentTree, filePath)
-			if err != nil {
-				continue
+		// Compute parent hashes in parallel
+		if len(parentFileList) > 0 {
+			jobs := make(chan fileHashJob, len(parentFileList))
+			results := make(chan fileHashResult, len(parentFileList))
+
+			var wg sync.WaitGroup
+			for i := 0; i < workerCount; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for job := range jobs {
+						content, err := commitReader.GetFileContent(job.tree, job.filePath)
+						if err != nil {
+							results <- fileHashResult{filePath: job.filePath, err: err}
+							continue
+						}
+						results <- fileHashResult{
+							filePath: job.filePath,
+							hash:     cas.SumB3(content),
+						}
+					}
+				}()
 			}
-			parentFiles[filePath] = cas.SumB3(content)
+
+			// Submit jobs
+			for _, filePath := range parentFileList {
+				jobs <- fileHashJob{filePath: filePath, tree: parentTree}
+			}
+			close(jobs)
+
+			// Wait for workers and close results
+			go func() {
+				wg.Wait()
+				close(results)
+			}()
+
+			// Collect results
+			for result := range results {
+				if result.err == nil {
+					parentFiles.Store(result.filePath, result.hash)
+				}
+			}
 		}
-	} else {
-		parentFiles = make(map[string]cas.Hash)
 	}
 
 	// Read current commit and tree
@@ -74,58 +128,131 @@ func (rs *RepoSyncer) computeFileDeltas(parentHash, currentHash cas.Hash) ([]Fil
 		return nil, fmt.Errorf("failed to list current files: %w", err)
 	}
 
-	// Build map of current files
-	currentFiles := make(map[string][]byte)
-	for _, filePath := range currentFileList {
-		content, err := commitReader.GetFileContent(currentTree, filePath)
-		if err != nil {
-			continue
+	// Build map of current files with parallel content reading
+	var currentFiles sync.Map // map[string][]byte
+
+	if len(currentFileList) > 0 {
+		jobs := make(chan fileHashJob, len(currentFileList))
+		results := make(chan fileHashResult, len(currentFileList))
+
+		var wg sync.WaitGroup
+		for i := 0; i < workerCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for job := range jobs {
+					content, err := commitReader.GetFileContent(job.tree, job.filePath)
+					if err != nil {
+						results <- fileHashResult{filePath: job.filePath, err: err}
+						continue
+					}
+					results <- fileHashResult{
+						filePath: job.filePath,
+						hash:     cas.SumB3(content),
+						content:  content,
+					}
+				}
+			}()
 		}
-		currentFiles[filePath] = content
+
+		// Submit jobs
+		for _, filePath := range currentFileList {
+			jobs <- fileHashJob{filePath: filePath, tree: currentTree}
+		}
+		close(jobs)
+
+		// Wait for workers and close results
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		// Collect results
+		for result := range results {
+			if result.err == nil {
+				currentFiles.Store(result.filePath, result.content)
+			}
+		}
 	}
 
 	// Compute deltas
 	var changes []FileChange
+	var changesMu sync.Mutex
 
-	// Check for added and modified files
-	for filePath, content := range currentFiles {
-		currentHash := cas.SumB3(content)
-		parentHash, existed := parentFiles[filePath]
+	// Check for added and modified files in parallel
+	var deltaWg sync.WaitGroup
+	deltaJobs := make(chan string, len(currentFileList))
 
-		mode := "100644" // regular file
-		if len(content) > 0 && content[0] == '#' && bytes.Contains(content[:min(100, len(content))], []byte("!/")) {
-			mode = "100755"
-		}
+	for i := 0; i < workerCount; i++ {
+		deltaWg.Add(1)
+		go func() {
+			defer deltaWg.Done()
+			for filePath := range deltaJobs {
+				contentVal, ok := currentFiles.Load(filePath)
+				if !ok {
+					continue
+				}
+				content := contentVal.([]byte)
+				currHash := cas.SumB3(content)
 
-		if !existed {
-			// File added
-			changes = append(changes, FileChange{
-				Path:    filePath,
-				Content: content,
-				Mode:    mode,
-				Type:    "added",
-			})
-		} else if currentHash != parentHash {
-			// File modified
-			changes = append(changes, FileChange{
-				Path:    filePath,
-				Content: content,
-				Mode:    mode,
-				Type:    "modified",
-			})
-		}
-		// If hashes match, file unchanged - skip
+				mode := "100644" // regular file
+				if len(content) > 0 && content[0] == '#' && bytes.Contains(content[:min(100, len(content))], []byte("!/")) {
+					mode = "100755"
+				}
+
+				parentHashVal, existed := parentFiles.Load(filePath)
+				var change *FileChange
+
+				if !existed {
+					// File added
+					change = &FileChange{
+						Path:    filePath,
+						Content: content,
+						Mode:    mode,
+						Type:    "added",
+					}
+				} else {
+					parentH := parentHashVal.(cas.Hash)
+					if currHash != parentH {
+						// File modified
+						change = &FileChange{
+							Path:    filePath,
+							Content: content,
+							Mode:    mode,
+							Type:    "modified",
+						}
+					}
+				}
+
+				if change != nil {
+					changesMu.Lock()
+					changes = append(changes, *change)
+					changesMu.Unlock()
+				}
+			}
+		}()
 	}
 
+	// Submit delta comparison jobs
+	for _, filePath := range currentFileList {
+		deltaJobs <- filePath
+	}
+	close(deltaJobs)
+	deltaWg.Wait()
+
 	// Check for deleted files
-	for filePath := range parentFiles {
-		if _, exists := currentFiles[filePath]; !exists {
+	parentFiles.Range(func(key, _ any) bool {
+		filePath := key.(string)
+		if _, exists := currentFiles.Load(filePath); !exists {
+			changesMu.Lock()
 			changes = append(changes, FileChange{
 				Path: filePath,
 				Type: "deleted",
 			})
+			changesMu.Unlock()
 		}
-	}
+		return true
+	})
 
 	return changes, nil
 }
@@ -235,7 +362,7 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 	}
 
 	if len(errors) > 0 {
-		return nil, fmt.Errorf("failed to upload %d files: %v", len(errors), errors[0])
+		return nil, fmt.Errorf("failed to upload %d files: %w", len(errors), errors[0])
 	}
 
 	// NOTE: When using base_tree for delta uploads, deletions are handled automatically
@@ -390,50 +517,68 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 			return fmt.Errorf("failed to list files: %w", err)
 		}
 
-		// Special case: empty repository requires using Contents API for first commit
+		// Empty repository case: use parallel Git Data API for better performance
 		if parentSHA == "" {
-			fmt.Printf("Initial upload to empty repository: uploading %d files using Contents API\n", len(files))
+			fmt.Printf("Initial upload to empty repository: uploading %d files in parallel\n", len(files))
 
-			// Create progress bar for initial upload
-			initialUploadBar := progress.NewUploadBar(len(files), "Uploading initial files")
-
-			// Upload files using Contents API (creates commits automatically)
+			// Build change list for all files
+			var initialChanges []FileChange
 			for _, filePath := range files {
 				content, err := commitReader.GetFileContent(tree, filePath)
 				if err != nil {
-					initialUploadBar.Finish()
 					return fmt.Errorf("failed to get content for %s: %w", filePath, err)
 				}
 
-				// Create upload request directly with content (don't use UploadFile helper)
-				uploadReq := FileUploadRequest{
-					Message: commitObj.Message,
-					Content: base64.StdEncoding.EncodeToString(content),
-					Branch:  branch,
+				mode := "100644" // regular file
+				if len(content) > 0 && content[0] == '#' && bytes.Contains(content[:min(100, len(content))], []byte("!/")) {
+					mode = "100755"
 				}
 
-				// Upload file using Contents API
-				err = rs.client.UploadFile(ctx, owner, repo, filePath, uploadReq)
-				if err != nil {
-					initialUploadBar.Finish()
-					return fmt.Errorf("failed to upload %s: %w", filePath, err)
-				}
-
-				initialUploadBar.Increment()
+				initialChanges = append(initialChanges, FileChange{
+					Path:    filePath,
+					Content: content,
+					Mode:    mode,
+					Type:    "added",
+				})
 			}
 
-			initialUploadBar.Finish()
-			fmt.Printf("Successfully uploaded %d files to empty repository\n", len(files))
-
-			// Get the branch to find the commit SHA created by Contents API
-			branchInfo, err := rs.client.GetBranch(ctx, owner, repo, branch)
+			// Upload all blobs in parallel
+			initialTreeEntries, err := rs.createBlobsParallel(ctx, owner, repo, initialChanges)
 			if err != nil {
-				logging.Warn("Could not get branch info after upload", "error", err)
-				return nil
+				return fmt.Errorf("failed to create blobs for empty repo: %w", err)
 			}
+
+			// Create tree on GitHub (no base tree for empty repo)
+			initialTreeReq := CreateTreeRequest{
+				Tree: initialTreeEntries,
+			}
+			initialTreeResp, err := rs.client.CreateTree(ctx, owner, repo, initialTreeReq)
+			if err != nil {
+				return fmt.Errorf("failed to create tree for empty repo: %w", err)
+			}
+
+			// Create commit on GitHub (no parents for initial commit)
+			initialCommitReq := CreateCommitRequest{
+				Message: commitObj.Message,
+				Tree:    initialTreeResp.SHA,
+				Parents: []string{}, // Empty for initial commit
+			}
+			initialCommitResp, err := rs.client.CreateGitCommit(ctx, owner, repo, initialCommitReq)
+			if err != nil {
+				return fmt.Errorf("failed to create commit for empty repo: %w", err)
+			}
+
+			// Create branch reference pointing to the new commit
+			err = rs.client.CreateBranch(ctx, owner, repo, branch, initialCommitResp.SHA)
+			if err != nil {
+				return fmt.Errorf("failed to create branch reference: %w", err)
+			}
+
+			fmt.Printf("Successfully uploaded %d files to empty repository\n", len(files))
+			fmt.Printf("Created branch '%s' with initial commit %s\n", branch, initialCommitResp.SHA[:7])
 
 			// Store GitHub commit SHA in timeline
-			err = rs.updateTimelineWithGitHubSHA(branch, commitHash, branchInfo.Commit.SHA)
+			err = rs.updateTimelineWithGitHubSHA(branch, commitHash, initialCommitResp.SHA)
 			if err != nil {
 				logging.Warn("Failed to update timeline with GitHub SHA", "error", err)
 			}
