@@ -222,6 +222,11 @@ func TestGetAuthor(t *testing.T) {
 	}
 	defer os.Chdir(originalDir)
 
+	// Also isolate from global config by changing HOME
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
 	// Test that GetAuthor fails when user.name and user.email are not set
 	_, err = GetAuthor()
 	if err == nil {

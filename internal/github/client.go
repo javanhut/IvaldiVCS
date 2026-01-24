@@ -720,6 +720,18 @@ type FileUploadRequest struct {
 	Branch  string `json:"branch,omitempty"`
 }
 
+// FileUploadResponse represents the response from creating/updating a file
+type FileUploadResponse struct {
+	Content *FileContent `json:"content"`
+	Commit  struct {
+		SHA     string `json:"sha"`
+		Message string `json:"message"`
+		Tree    struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	} `json:"commit"`
+}
+
 // UploadFile uploads or updates a file in a repository
 func (c *Client) UploadFile(ctx context.Context, owner, repo, path string, req FileUploadRequest) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
@@ -732,6 +744,24 @@ func (c *Client) UploadFile(ctx context.Context, owner, repo, path string, req F
 	defer resp.Body.Close()
 
 	return nil
+}
+
+// UploadFileWithResponse uploads a file and returns the response with commit info
+func (c *Client) UploadFileWithResponse(ctx context.Context, owner, repo, path string, req FileUploadRequest) (*FileUploadResponse, error) {
+	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
+
+	resp, err := c.doRequest(ctx, "PUT", apiPath, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var uploadResp FileUploadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&uploadResp); err != nil {
+		return nil, fmt.Errorf("failed to decode upload response: %w", err)
+	}
+
+	return &uploadResp, nil
 }
 
 // TestAuth tests if authentication is working
