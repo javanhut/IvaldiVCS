@@ -374,6 +374,27 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 	return treeEntries, nil
 }
 
+// bootstrapEmptyRepo initializes an empty GitHub repository using Contents API.
+// This creates a temporary commit so the Git Data API becomes usable.
+// Returns the commit SHA (used only to verify repo is no longer empty).
+func (rs *RepoSyncer) bootstrapEmptyRepo(ctx context.Context, owner, repo, branch string) (string, error) {
+	// Minimal temporary content - will be replaced by orphan commit
+	bootstrapContent := []byte("initializing")
+
+	uploadReq := FileUploadRequest{
+		Message: "Initialize repository",
+		Content: base64.StdEncoding.EncodeToString(bootstrapContent),
+		Branch:  branch,
+	}
+
+	uploadResp, err := rs.client.UploadFileWithResponse(ctx, owner, repo, ".ivaldi-bootstrap", uploadReq)
+	if err != nil {
+		return "", fmt.Errorf("failed to bootstrap: %w", err)
+	}
+
+	return uploadResp.Commit.SHA, nil
+}
+
 // UploadFile uploads a file to GitHub
 func (rs *RepoSyncer) UploadFile(ctx context.Context, owner, repo, path, branch, message string) error {
 	// Read file content
@@ -517,11 +538,20 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 			return fmt.Errorf("failed to list files: %w", err)
 		}
 
-		// Empty repository case: use parallel Git Data API for better performance
+		// Empty repository case: bootstrap then use Git Data API
 		if parentSHA == "" {
-			fmt.Printf("Initial upload to empty repository: uploading %d files in parallel\n", len(files))
+			fmt.Printf("Initial upload to empty repository: %d files\n", len(files))
 
-			// Build change list for all files
+			// Phase 1: Bootstrap - create temp commit so Git Data API works
+			fmt.Printf("Initializing repository...\n")
+			_, err := rs.bootstrapEmptyRepo(ctx, owner, repo, branch)
+			if err != nil {
+				return fmt.Errorf("failed to initialize empty repo: %w", err)
+			}
+
+			// Phase 2: Upload all blobs via Git Data API (now works)
+			fmt.Printf("Uploading %d files...\n", len(files))
+
 			var initialChanges []FileChange
 			for _, filePath := range files {
 				content, err := commitReader.GetFileContent(tree, filePath)
@@ -529,7 +559,7 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 					return fmt.Errorf("failed to get content for %s: %w", filePath, err)
 				}
 
-				mode := "100644" // regular file
+				mode := "100644"
 				if len(content) > 0 && content[0] == '#' && bytes.Contains(content[:min(100, len(content))], []byte("!/")) {
 					mode = "100755"
 				}
@@ -542,42 +572,45 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 				})
 			}
 
-			// Upload all blobs in parallel
 			initialTreeEntries, err := rs.createBlobsParallel(ctx, owner, repo, initialChanges)
 			if err != nil {
-				return fmt.Errorf("failed to create blobs for empty repo: %w", err)
+				return fmt.Errorf("failed to create blobs: %w", err)
 			}
 
-			// Create tree on GitHub (no base tree for empty repo)
+			// Phase 3: Create tree with only user files (no base_tree)
 			initialTreeReq := CreateTreeRequest{
 				Tree: initialTreeEntries,
 			}
 			initialTreeResp, err := rs.client.CreateTree(ctx, owner, repo, initialTreeReq)
 			if err != nil {
-				return fmt.Errorf("failed to create tree for empty repo: %w", err)
+				return fmt.Errorf("failed to create tree: %w", err)
 			}
 
-			// Create commit on GitHub (no parents for initial commit)
+			// Phase 4: Create ORPHAN commit (no parents = initial commit)
 			initialCommitReq := CreateCommitRequest{
 				Message: commitObj.Message,
 				Tree:    initialTreeResp.SHA,
-				Parents: []string{}, // Empty for initial commit
+				Parents: []string{}, // Empty = orphan commit
 			}
 			initialCommitResp, err := rs.client.CreateGitCommit(ctx, owner, repo, initialCommitReq)
 			if err != nil {
-				return fmt.Errorf("failed to create commit for empty repo: %w", err)
+				return fmt.Errorf("failed to create commit: %w", err)
 			}
 
-			// Create branch reference pointing to the new commit
-			err = rs.client.CreateBranch(ctx, owner, repo, branch, initialCommitResp.SHA)
+			// Phase 5: Force update branch to point to orphan commit
+			// This replaces the bootstrap commit entirely
+			updateReq := UpdateRefRequest{
+				SHA:   initialCommitResp.SHA,
+				Force: true, // Force required to replace bootstrap commit
+			}
+			err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", branch), updateReq)
 			if err != nil {
-				return fmt.Errorf("failed to create branch reference: %w", err)
+				return fmt.Errorf("failed to update branch: %w", err)
 			}
 
-			fmt.Printf("Successfully uploaded %d files to empty repository\n", len(files))
-			fmt.Printf("Created branch '%s' with initial commit %s\n", branch, initialCommitResp.SHA[:7])
+			fmt.Printf("Successfully uploaded %d files\n", len(files))
+			fmt.Printf("Created commit %s on branch '%s'\n", initialCommitResp.SHA[:7], branch)
 
-			// Store GitHub commit SHA in timeline
 			err = rs.updateTimelineWithGitHubSHA(branch, commitHash, initialCommitResp.SHA)
 			if err != nil {
 				logging.Warn("Failed to update timeline with GitHub SHA", "error", err)
