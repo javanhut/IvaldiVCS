@@ -2,6 +2,8 @@ package cli
 
 import (
 	"testing"
+
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 )
 
 // BenchmarkPatternCache benchmarks the pattern cache matching
@@ -39,20 +41,11 @@ func BenchmarkPatternCache(b *testing.B) {
 	}
 
 	b.Run("PatternCache", func(b *testing.B) {
-		cache := NewPatternCache(patterns)
+		cache := ignore.NewPatternCache(patterns)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			for _, path := range testPaths {
 				cache.IsIgnored(path)
-			}
-		}
-	})
-
-	b.Run("OriginalPatternMatching", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			for _, path := range testPaths {
-				isFileIgnored(path, patterns)
 			}
 		}
 	})
@@ -75,7 +68,7 @@ func BenchmarkPatternCacheLargePatternSet(b *testing.B) {
 	}
 
 	b.Run("PatternCache_100Patterns", func(b *testing.B) {
-		cache := NewPatternCache(patterns)
+		cache := ignore.NewPatternCache(patterns)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			for _, path := range testPaths {
@@ -83,18 +76,9 @@ func BenchmarkPatternCacheLargePatternSet(b *testing.B) {
 			}
 		}
 	})
-
-	b.Run("Original_100Patterns", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			for _, path := range testPaths {
-				isFileIgnored(path, patterns)
-			}
-		}
-	})
 }
 
-// TestPatternCacheCorrectness verifies pattern cache matches original behavior
+// TestPatternCacheCorrectness verifies pattern cache produces correct results
 func TestPatternCacheCorrectness(t *testing.T) {
 	patterns := []string{
 		"*.log",
@@ -118,18 +102,12 @@ func TestPatternCacheCorrectness(t *testing.T) {
 		{".ivaldiignore", false}, // Should never be ignored
 	}
 
-	cache := NewPatternCache(patterns)
+	cache := ignore.NewPatternCache(patterns)
 
 	for _, tc := range testCases {
-		cacheResult := cache.IsIgnored(tc.path)
-		originalResult := isFileIgnored(tc.path, patterns)
-
-		if cacheResult != originalResult {
-			t.Errorf("Mismatch for path %q: cache=%v, original=%v", tc.path, cacheResult, originalResult)
-		}
-
-		if cacheResult != tc.expected {
-			t.Errorf("Path %q: expected %v, got %v", tc.path, tc.expected, cacheResult)
+		result := cache.IsIgnored(tc.path)
+		if result != tc.expected {
+			t.Errorf("Path %q: expected %v, got %v", tc.path, tc.expected, result)
 		}
 	}
 }

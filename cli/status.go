@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/objects"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/spf13/cobra"
@@ -68,13 +68,13 @@ var statusCmd = &cobra.Command{
 		}
 
 		// Load ignore patterns
-		ignorePatterns, err := loadIgnorePatterns(workDir)
+		patternCache, err := ignore.LoadPatternCache(workDir)
 		if err != nil {
 			log.Printf("Warning: Failed to load ignore patterns: %v", err)
 		}
 
 		// Get file statuses
-		fileStatuses, err := getFileStatuses(workDir, ivaldiDir, ignorePatterns)
+		fileStatuses, err := getFileStatuses(workDir, ivaldiDir, patternCache)
 		if err != nil {
 			return fmt.Errorf("failed to get file statuses: %w", err)
 		}
@@ -194,7 +194,7 @@ func init() {
 }
 
 // getFileStatuses analyzes the working directory and returns file status information
-func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]FileStatusInfo, error) {
+func getFileStatuses(workDir, ivaldiDir string, patternCache *ignore.PatternCache) ([]FileStatusInfo, error) {
 	var fileStatuses []FileStatusInfo
 
 	// Get staged files
@@ -212,12 +212,10 @@ func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]File
 	// Walk the working directory
 	err = filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
-		}
-
-		// Skip directories
-		if info.IsDir() {
-			return nil
 		}
 
 		// Get relative path
@@ -226,13 +224,24 @@ func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]File
 			return err
 		}
 
-		// Skip .ivaldi directory
+		// Handle directories: skip .ivaldi and ignored dirs entirely
+		if info.IsDir() {
+			if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+				return filepath.SkipDir
+			}
+			if patternCache != nil && patternCache.IsDirIgnored(relPath) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip .ivaldi files (safety fallback)
 		if strings.HasPrefix(relPath, ".ivaldi") {
 			return nil
 		}
 
 		// Check if file is ignored
-		if isIgnored(relPath, ignorePatterns) {
+		if patternCache != nil && patternCache.IsIgnored(relPath) {
 			fileStatuses = append(fileStatuses, FileStatusInfo{
 				Path:   relPath,
 				Status: StatusIgnored,
@@ -362,30 +371,6 @@ func getStagedFiles(ivaldiDir string) ([]string, error) {
 	return files, nil
 }
 
-// loadIgnorePatterns loads patterns from .ivaldiignore file
-func loadIgnorePatterns(workDir string) ([]string, error) {
-	ignoreFile := filepath.Join(workDir, ".ivaldiignore")
-	if _, err := os.Stat(ignoreFile); os.IsNotExist(err) {
-		return []string{}, nil // No ignore file
-	}
-
-	file, err := os.Open(ignoreFile)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var patterns []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
-			patterns = append(patterns, line)
-		}
-	}
-
-	return patterns, scanner.Err()
-}
 
 // getKnownFiles reads files from the last commit/seal for proper status tracking
 func getKnownFiles(ivaldiDir string) (map[string][32]byte, error) {
@@ -502,17 +487,3 @@ func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline, ivaldiD
 	return nil
 }
 
-// isIgnored checks if a file path matches any ignore patterns
-func isIgnored(path string, patterns []string) bool {
-	for _, pattern := range patterns {
-		// Simple pattern matching - in a full implementation,
-		// this would support full glob patterns
-		if matched, _ := filepath.Match(pattern, path); matched {
-			return true
-		}
-		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
-			return true
-		}
-	}
-	return false
-}

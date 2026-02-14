@@ -80,33 +80,17 @@ var sealCmd = &cobra.Command{
 		mmr := history.NewMMR()
 		commitBuilder := commit.NewCommitBuilder(casStore, mmr)
 
-		// Create materializer to scan workspace
+		// Scan only the staged files (not the entire workspace)
 		materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
-
-		// Scan the current workspace to create file metadata
-		wsIndex, err := materializer.ScanWorkspace()
+		wsIndex, err := materializer.ScanSpecificFiles(stagedFiles)
 		if err != nil {
-			return fmt.Errorf("failed to scan workspace: %w", err)
+			return fmt.Errorf("failed to scan staged files: %w", err)
 		}
 
-		// Get workspace files
 		wsLoader := wsindex.NewLoader(casStore)
-		allWorkspaceFiles, err := wsLoader.ListAll(wsIndex)
+		workspaceFiles, err := wsLoader.ListAll(wsIndex)
 		if err != nil {
 			return fmt.Errorf("failed to list workspace files: %w", err)
-		}
-
-		// Filter workspace files to only include staged files
-		stagedFileMap := make(map[string]bool)
-		for _, file := range stagedFiles {
-			stagedFileMap[file] = true
-		}
-
-		var workspaceFiles []wsindex.FileMetadata
-		for _, file := range allWorkspaceFiles {
-			if stagedFileMap[file.Path] {
-				workspaceFiles = append(workspaceFiles, file)
-			}
 		}
 
 		fmt.Printf("Found %d files in workspace\n", len(workspaceFiles))

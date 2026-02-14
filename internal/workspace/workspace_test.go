@@ -8,6 +8,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
 )
@@ -461,6 +462,160 @@ func TestRemoveEmptyDirectories(t *testing.T) {
 	_, err = os.Stat(workDir)
 	if err != nil {
 		t.Error("Working directory should not be removed")
+	}
+}
+
+func TestScanSpecificFiles(t *testing.T) {
+	_, workDir, materializer, cleanup := setupTestWorkspace(t)
+	defer cleanup()
+
+	// Create test files
+	err := os.WriteFile(filepath.Join(workDir, "file1.txt"), []byte("content1"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create file1: %v", err)
+	}
+	err = os.WriteFile(filepath.Join(workDir, "file2.txt"), []byte("content2"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create file2: %v", err)
+	}
+	err = os.WriteFile(filepath.Join(workDir, "file3.txt"), []byte("content3"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create file3: %v", err)
+	}
+
+	// Scan only file1 and file3
+	index, err := materializer.ScanSpecificFiles([]string{"file1.txt", "file3.txt"})
+	if err != nil {
+		t.Fatalf("ScanSpecificFiles failed: %v", err)
+	}
+
+	if index.Count != 2 {
+		t.Errorf("Expected 2 files in index, got %d", index.Count)
+	}
+
+	// Verify the correct files are in the index
+	wsLoader := wsindex.NewLoader(materializer.CAS)
+	files, err := wsLoader.ListAll(index)
+	if err != nil {
+		t.Fatalf("Failed to list files: %v", err)
+	}
+
+	fileNames := make(map[string]bool)
+	for _, f := range files {
+		fileNames[f.Path] = true
+	}
+
+	if !fileNames["file1.txt"] {
+		t.Error("Expected file1.txt in index")
+	}
+	if fileNames["file2.txt"] {
+		t.Error("Did not expect file2.txt in index")
+	}
+	if !fileNames["file3.txt"] {
+		t.Error("Expected file3.txt in index")
+	}
+}
+
+func TestScanSpecificFilesMissingFile(t *testing.T) {
+	_, workDir, materializer, cleanup := setupTestWorkspace(t)
+	defer cleanup()
+
+	// Create only one file
+	err := os.WriteFile(filepath.Join(workDir, "exists.txt"), []byte("content"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	// Scan with a mix of existing and missing files
+	index, err := materializer.ScanSpecificFiles([]string{"exists.txt", "missing.txt"})
+	if err != nil {
+		t.Fatalf("ScanSpecificFiles should not fail on missing files: %v", err)
+	}
+
+	// Should only include the existing file
+	if index.Count != 1 {
+		t.Errorf("Expected 1 file in index (skipping missing), got %d", index.Count)
+	}
+}
+
+func TestScanWorkspaceWithIgnorePatterns(t *testing.T) {
+	_, workDir, materializer, cleanup := setupTestWorkspace(t)
+	defer cleanup()
+
+	// Create files and directories
+	err := os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create main.go: %v", err)
+	}
+
+	// Create a "target" directory with files (simulating Rust build output)
+	err = os.MkdirAll(filepath.Join(workDir, "target", "release"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create target dir: %v", err)
+	}
+	err = os.WriteFile(filepath.Join(workDir, "target", "release", "binary"), []byte("binary content"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create binary: %v", err)
+	}
+
+	// Create a log file
+	err = os.WriteFile(filepath.Join(workDir, "debug.log"), []byte("log content"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create log file: %v", err)
+	}
+
+	// Set up ignore patterns
+	pc := ignore.NewPatternCache([]string{"target/", "*.log"})
+	materializer.SetIgnorePatterns(pc)
+
+	// Scan workspace
+	index, err := materializer.ScanWorkspace()
+	if err != nil {
+		t.Fatalf("ScanWorkspace failed: %v", err)
+	}
+
+	// Should only include main.go (target/ and *.log are ignored)
+	if index.Count != 1 {
+		t.Errorf("Expected 1 file (ignoring target/ and *.log), got %d", index.Count)
+	}
+
+	wsLoader := wsindex.NewLoader(materializer.CAS)
+	files, err := wsLoader.ListAll(index)
+	if err != nil {
+		t.Fatalf("Failed to list files: %v", err)
+	}
+
+	if len(files) != 1 || files[0].Path != "main.go" {
+		t.Errorf("Expected only main.go, got %v", files)
+	}
+}
+
+func TestScanWorkspaceSkipsIvaldiDir(t *testing.T) {
+	_, workDir, materializer, cleanup := setupTestWorkspace(t)
+	defer cleanup()
+
+	// Create a file in workspace
+	err := os.WriteFile(filepath.Join(workDir, "src.go"), []byte("package src"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	// .ivaldi directory already exists from setup - make sure it's skipped
+	index, err := materializer.ScanWorkspace()
+	if err != nil {
+		t.Fatalf("ScanWorkspace failed: %v", err)
+	}
+
+	wsLoader := wsindex.NewLoader(materializer.CAS)
+	files, err := wsLoader.ListAll(index)
+	if err != nil {
+		t.Fatalf("Failed to list files: %v", err)
+	}
+
+	for _, f := range files {
+		if f.Path == ".ivaldi" || filepath.Dir(f.Path) == ".ivaldi" {
+			t.Errorf("ScanWorkspace should skip .ivaldi files, found: %s", f.Path)
+		}
 	}
 }
 

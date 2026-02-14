@@ -11,6 +11,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/javanhut/Ivaldi-vcs/internal/wsindex"
@@ -85,6 +86,8 @@ func diffWorkingOrStaged(casStore cas.CAS, ivaldiDir, workDir string) error {
 
 	// Show working directory vs staged (or HEAD if nothing staged)
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+	ignoreCache, _ := ignore.LoadPatternCache(workDir)
+	materializer.SetIgnorePatterns(ignoreCache)
 	currentIndex, err := materializer.ScanWorkspace()
 	if err != nil {
 		return fmt.Errorf("failed to scan workspace: %w", err)
@@ -153,6 +156,8 @@ func diffStagedVsHead(casStore cas.CAS, ivaldiDir, workDir string) error {
 
 	// Scan workspace to get current file data
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+	ignoreCache, _ := ignore.LoadPatternCache(workDir)
+	materializer.SetIgnorePatterns(ignoreCache)
 	currentIndex, err := materializer.ScanWorkspace()
 	if err != nil {
 		return fmt.Errorf("failed to scan workspace: %w", err)
@@ -207,6 +212,8 @@ func diffWorkingVsCommit(casStore cas.CAS, ivaldiDir, workDir, commitRef string)
 
 	// Get working directory index
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+	ignoreCache, _ := ignore.LoadPatternCache(workDir)
+	materializer.SetIgnorePatterns(ignoreCache)
 	workingIndex, err := materializer.ScanWorkspace()
 	if err != nil {
 		return fmt.Errorf("failed to scan workspace: %w", err)

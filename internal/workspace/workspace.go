@@ -27,6 +27,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/hamtdir"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/logging"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/shelf"
@@ -44,9 +45,15 @@ type WorkspaceState struct {
 
 // Materializer handles workspace materialization operations.
 type Materializer struct {
-	CAS       cas.CAS
-	IvaldiDir string
-	WorkDir   string
+	CAS         cas.CAS
+	IvaldiDir   string
+	WorkDir     string
+	IgnoreCache *ignore.PatternCache
+}
+
+// SetIgnorePatterns sets the ignore-pattern cache used by ScanWorkspace.
+func (m *Materializer) SetIgnorePatterns(pc *ignore.PatternCache) {
+	m.IgnoreCache = pc
 }
 
 // NewMaterializer creates a new Materializer.
@@ -100,38 +107,67 @@ func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
 }
 
 // ScanWorkspace scans the current working directory and creates a workspace index.
+// It respects ignore patterns set via SetIgnorePatterns and handles transient files
+// (files that disappear between discovery and read) gracefully.
 func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 	var files []wsindex.FileMetadata
 
 	err := filepath.WalkDir(m.WorkDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// Handle transient directories/files that disappear during walk
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during scan, skipping", "path", path)
+				return nil
+			}
 			return err
 		}
 
-		// Skip directories
-		if d.IsDir() {
-			return nil
-		}
-
-		// Skip .ivaldi directory
 		relPath, err := filepath.Rel(m.WorkDir, path)
 		if err != nil {
 			return err
 		}
 
+		// Skip .ivaldi directory entirely
+		if d.IsDir() {
+			if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+				return filepath.SkipDir
+			}
+
+			// Skip directories matching ignore patterns
+			if m.IgnoreCache != nil && m.IgnoreCache.IsDirIgnored(relPath) {
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+
+		// Skip .ivaldi files (in case we get here without SkipDir)
 		if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
+			return nil
+		}
+
+		// Skip files matching ignore patterns
+		if m.IgnoreCache != nil && m.IgnoreCache.IsIgnored(relPath) {
 			return nil
 		}
 
 		// Get file info
 		info, err := d.Info()
 		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during scan, skipping", "path", relPath)
+				return nil
+			}
 			return err
 		}
 
 		// Read file content
 		content, err := os.ReadFile(path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during read, skipping", "path", relPath)
+				return nil
+			}
 			return fmt.Errorf("failed to read file %s: %w", relPath, err)
 		}
 
@@ -161,6 +197,60 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 	}
 
 	// Build workspace index
+	wsBuilder := wsindex.NewBuilder(m.CAS)
+	return wsBuilder.Build(files)
+}
+
+// ScanSpecificFiles scans only the specified relative paths and creates a workspace index.
+// Files that do not exist or disappear during read are skipped with a warning.
+// This is O(len(relativePaths)) instead of O(all workspace files).
+func (m *Materializer) ScanSpecificFiles(relativePaths []string) (wsindex.IndexRef, error) {
+	var files []wsindex.FileMetadata
+
+	for _, relPath := range relativePaths {
+		fullPath := filepath.Join(m.WorkDir, relPath)
+
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("Staged file not found, skipping", "path", relPath)
+				continue
+			}
+			return wsindex.IndexRef{}, fmt.Errorf("failed to stat file %s: %w", relPath, err)
+		}
+
+		if info.IsDir() {
+			logging.Warn("Skipping directory in staged files", "path", relPath)
+			continue
+		}
+
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during read, skipping", "path", relPath)
+				continue
+			}
+			return wsindex.IndexRef{}, fmt.Errorf("failed to read file %s: %w", relPath, err)
+		}
+
+		builder := filechunk.NewBuilder(m.CAS, filechunk.DefaultParams())
+		fileRef, err := builder.Build(content)
+		if err != nil {
+			return wsindex.IndexRef{}, fmt.Errorf("failed to create file chunks for %s: %w", relPath, err)
+		}
+
+		fileMetadata := wsindex.FileMetadata{
+			Path:     relPath,
+			FileRef:  fileRef,
+			ModTime:  info.ModTime(),
+			Mode:     uint32(info.Mode()),
+			Size:     info.Size(),
+			Checksum: cas.SumB3(content),
+		}
+
+		files = append(files, fileMetadata)
+	}
+
 	wsBuilder := wsindex.NewBuilder(m.CAS)
 	return wsBuilder.Build(files)
 }

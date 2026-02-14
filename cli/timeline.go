@@ -10,6 +10,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/seals"
 	"github.com/javanhut/Ivaldi-vcs/internal/shelf"
@@ -68,6 +69,8 @@ var createTimelineCmd = &cobra.Command{
 			// This ensures files like tl1.txt stay with tl1 when we create tl2
 			shelfManager := shelf.NewShelfManager(casStore, ivaldiDir)
 			materializer := workspace.NewMaterializer(casStore, ivaldiDir, ".")
+			ignoreCache, _ := ignore.LoadPatternCache(".")
+			materializer.SetIgnorePatterns(ignoreCache)
 			currentWorkspaceIndex, err := materializer.ScanWorkspace()
 			if err == nil {
 				// Get the current timeline's base (committed) state
@@ -387,6 +390,8 @@ func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimelin
 	// Scan current workspace to capture ALL files (both tracked and untracked)
 	// This becomes the initial state of the new timeline
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, ".")
+	ignoreCache, _ := ignore.LoadPatternCache(".")
+	materializer.SetIgnorePatterns(ignoreCache)
 	wsIndex, err := materializer.ScanWorkspace()
 	if err != nil {
 		return fmt.Errorf("failed to scan workspace: %w", err)
