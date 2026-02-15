@@ -212,9 +212,10 @@ var autoExcludePatterns = []string{
 }
 
 var gatherCmd = &cobra.Command{
-	Use:   "gather [files...]",
-	Short: "Stage files for the next seal/commit",
-	Long:  `Gathers (stages) specified files or all modified files that will be included in the next seal operation`,
+	Use:     "gather [files...]",
+	Aliases: []string{"add", "select"},
+	Short:   "Stage files for the next seal/commit",
+	Long:    `Gathers (stages) specified files or all modified files that will be included in the next seal operation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check if we're in an Ivaldi repository
 		ivaldiDir := ".ivaldi"
