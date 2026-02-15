@@ -23,8 +23,11 @@ func TestNewPatternCache(t *testing.T) {
 	if len(cache.dirPatterns) != 2 {
 		t.Errorf("Expected 2 dir patterns, got %d", len(cache.dirPatterns))
 	}
-	if len(cache.globPatterns) != 2 {
-		t.Errorf("Expected 2 glob patterns, got %d", len(cache.globPatterns))
+	if len(cache.globPatterns) != 1 {
+		t.Errorf("Expected 1 glob pattern, got %d", len(cache.globPatterns))
+	}
+	if len(cache.doubleStarPats) != 1 {
+		t.Errorf("Expected 1 double-star pattern, got %d", len(cache.doubleStarPats))
 	}
 	if len(cache.literalMatches) != 1 {
 		t.Errorf("Expected 1 literal match, got %d", len(cache.literalMatches))

@@ -12,12 +12,19 @@ import (
 	"strings"
 )
 
+// doubleStarPattern holds a pre-split ** glob pattern.
+type doubleStarPattern struct {
+	prefix string // Part before **
+	suffix string // Part after **
+}
+
 // PatternCache holds pre-compiled ignore patterns for fast matching.
 type PatternCache struct {
-	patterns       []string
-	dirPatterns    []string        // Patterns ending with /
-	globPatterns   []string        // Patterns with wildcards
-	literalMatches map[string]bool // Exact-match patterns
+	patterns         []string
+	dirPatterns      []string             // Patterns ending with /
+	globPatterns     []string             // Patterns with wildcards (no **)
+	doubleStarPats   []doubleStarPattern  // Pre-split ** patterns
+	literalMatches   map[string]bool      // Exact-match patterns
 }
 
 // NewPatternCache creates a PatternCache from a list of patterns.
@@ -30,6 +37,15 @@ func NewPatternCache(patterns []string) *PatternCache {
 	for _, pattern := range patterns {
 		if strings.HasSuffix(pattern, "/") {
 			cache.dirPatterns = append(cache.dirPatterns, strings.TrimSuffix(pattern, "/"))
+		} else if strings.Contains(pattern, "**") {
+			// Pre-split ** patterns at cache creation time
+			parts := strings.SplitN(pattern, "**", 2)
+			if len(parts) == 2 {
+				cache.doubleStarPats = append(cache.doubleStarPats, doubleStarPattern{
+					prefix: strings.TrimPrefix(parts[0], "/"),
+					suffix: strings.TrimPrefix(parts[1], "/"),
+				})
+			}
 		} else if strings.ContainsAny(pattern, "*?[") {
 			cache.globPatterns = append(cache.globPatterns, pattern)
 		} else {
@@ -61,7 +77,7 @@ func (pc *PatternCache) IsIgnored(path string) bool {
 		}
 	}
 
-	// Check glob patterns
+	// Check simple glob patterns (no **)
 	for _, pattern := range pc.globPatterns {
 		if matched, _ := filepath.Match(pattern, path); matched {
 			return true
@@ -69,23 +85,23 @@ func (pc *PatternCache) IsIgnored(path string) bool {
 		if matched, _ := filepath.Match(pattern, baseName); matched {
 			return true
 		}
-		// Handle ** patterns
-		if strings.Contains(pattern, "**") {
-			parts := strings.Split(pattern, "**")
-			if len(parts) == 2 {
-				prefix := strings.TrimPrefix(parts[0], "/")
-				suffix := strings.TrimPrefix(parts[1], "/")
+	}
 
-				if prefix != "" && !strings.HasPrefix(path, prefix) {
-					continue
-				}
-
-				if suffix != "" {
-					if matched, _ := filepath.Match(suffix, baseName); matched {
-						return true
-					}
-				}
+	// Check pre-compiled ** patterns
+	for _, dsp := range pc.doubleStarPats {
+		if dsp.prefix != "" && !strings.HasPrefix(path, dsp.prefix) {
+			continue
+		}
+		if dsp.suffix != "" {
+			if matched, _ := filepath.Match(dsp.suffix, baseName); matched {
+				return true
 			}
+		} else if dsp.prefix == "" {
+			// Pattern is just "**" — matches everything
+			return true
+		} else {
+			// Pattern is "prefix/**" — matches anything under prefix
+			return true
 		}
 	}
 

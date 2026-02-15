@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 )
@@ -302,6 +303,12 @@ func (l *Loader) readLeaf(data []byte, w io.Writer) error {
 	return err
 }
 
+// childResult holds the result of a parallel CAS read for a child node.
+type childResult struct {
+	data []byte
+	err  error
+}
+
 // readInternal reads content from an internal node.
 func (l *Loader) readInternal(data []byte, w io.Writer) error {
 	if len(data) == 0 || data[0] != 0x01 {
@@ -309,7 +316,7 @@ func (l *Loader) readInternal(data []byte, w io.Writer) error {
 	}
 
 	buf := bytes.NewReader(data[1:])
-	
+
 	// Read child count
 	childCount, err := binary.ReadUvarint(buf)
 	if err != nil {
@@ -331,29 +338,61 @@ func (l *Loader) readInternal(data []byte, w io.Writer) error {
 		return fmt.Errorf("failed to read total size: %w", err)
 	}
 
-	// Recursively read children
-	for _, childHash := range children {
-		// We need to determine the child's kind and size
-		// For simplicity, we'll peek at the stored data
-		childData, err := l.CAS.Get(childHash)
-		if err != nil {
-			return fmt.Errorf("failed to get child %s: %w", childHash, err)
+	// Parallel CAS reads when there are more than 2 children
+	if childCount > 2 {
+		results := make([]childResult, childCount)
+		var wg sync.WaitGroup
+		for i := uint64(0); i < childCount; i++ {
+			wg.Add(1)
+			go func(idx uint64) {
+				defer wg.Done()
+				d, e := l.CAS.Get(children[idx])
+				results[idx] = childResult{data: d, err: e}
+			}(i)
 		}
+		wg.Wait()
 
-		var childNode NodeRef
-		childNode.Hash = childHash
-		
-		if len(childData) > 0 && childData[0] == 0x00 {
-			childNode.Kind = Leaf
-		} else if len(childData) > 0 && childData[0] == 0x01 {
-			childNode.Kind = Node
-		} else {
-			return fmt.Errorf("invalid child node encoding")
+		// Write sequentially to maintain output order
+		for i, res := range results {
+			if res.err != nil {
+				return fmt.Errorf("failed to get child %s: %w", children[i], res.err)
+			}
+
+			var childNode NodeRef
+			childNode.Hash = children[i]
+			if len(res.data) > 0 && res.data[0] == 0x00 {
+				childNode.Kind = Leaf
+			} else if len(res.data) > 0 && res.data[0] == 0x01 {
+				childNode.Kind = Node
+			} else {
+				return fmt.Errorf("invalid child node encoding")
+			}
+
+			if err := l.readNode(childNode, w); err != nil {
+				return err
+			}
 		}
+	} else {
+		// Sequential reads for <= 2 children
+		for _, childHash := range children {
+			childData, err := l.CAS.Get(childHash)
+			if err != nil {
+				return fmt.Errorf("failed to get child %s: %w", childHash, err)
+			}
 
-		err = l.readNode(childNode, w)
-		if err != nil {
-			return err
+			var childNode NodeRef
+			childNode.Hash = childHash
+			if len(childData) > 0 && childData[0] == 0x00 {
+				childNode.Kind = Leaf
+			} else if len(childData) > 0 && childData[0] == 0x01 {
+				childNode.Kind = Node
+			} else {
+				return fmt.Errorf("invalid child node encoding")
+			}
+
+			if err := l.readNode(childNode, w); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -103,7 +103,7 @@ var createTimelineCmd = &cobra.Command{
 
 			// THEN: Capture the workspace state for the NEW timeline
 			log.Printf("Capturing current workspace state for new timeline")
-			err = createCommitFromWorkspace(casStore, ivaldiDir, currentTimeline, &baseHashes)
+			err = createCommitFromWorkspace(casStore, ivaldiDir, currentTimeline, &baseHashes, &currentWorkspaceIndex)
 			if err != nil {
 				log.Printf("Warning: Could not create workspace snapshot: %v", err)
 
@@ -370,7 +370,8 @@ var removeTimelineCmd = &cobra.Command{
 
 // createCommitFromWorkspace creates a commit object from the current workspace state
 // and stores the commit hash in the provided baseHashes array.
-func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimeline string, baseHashes *[2][32]byte) error {
+// If preScannedIndex is non-nil, it is used instead of rescanning the workspace.
+func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimeline string, baseHashes *[2][32]byte, preScannedIndex *wsindex.IndexRef) error {
 	// Get the parent timeline's commit if it exists
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
@@ -389,14 +390,18 @@ func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimelin
 		}
 	}
 
-	// Scan current workspace to capture ALL files (both tracked and untracked)
-	// This becomes the initial state of the new timeline
-	materializer := workspace.NewMaterializer(casStore, ivaldiDir, ".")
-	ignoreCache, _ := ignore.LoadPatternCache(".")
-	materializer.SetIgnorePatterns(ignoreCache)
-	wsIndex, err := materializer.ScanWorkspace()
-	if err != nil {
-		return fmt.Errorf("failed to scan workspace: %w", err)
+	// Use pre-scanned index if available, otherwise scan workspace
+	var wsIndex wsindex.IndexRef
+	if preScannedIndex != nil {
+		wsIndex = *preScannedIndex
+	} else {
+		materializer := workspace.NewMaterializer(casStore, ivaldiDir, ".")
+		ignoreCache, _ := ignore.LoadPatternCache(".")
+		materializer.SetIgnorePatterns(ignoreCache)
+		wsIndex, err = materializer.ScanWorkspace()
+		if err != nil {
+			return fmt.Errorf("failed to scan workspace: %w", err)
+		}
 	}
 
 	wsLoader := wsindex.NewLoader(casStore)

@@ -43,7 +43,7 @@ func NewPersistentMMR(casStore cas.CAS, ivaldiDir string) (*PersistentMMR, error
 	return p, nil
 }
 
-// AppendLeaf appends a leaf and persists the state.
+// AppendLeaf appends a leaf and persists the state in a single transaction.
 func (p *PersistentMMR) AppendLeaf(l Leaf) (uint64, Hash, error) {
 	// Call parent implementation
 	idx, root, err := p.MMR.AppendLeaf(l)
@@ -51,13 +51,9 @@ func (p *PersistentMMR) AppendLeaf(l Leaf) (uint64, Hash, error) {
 		return 0, Hash{}, err
 	}
 
-	// Persist the leaf and MMR state
-	if err := p.persistLeaf(idx, l); err != nil {
-		return 0, Hash{}, fmt.Errorf("failed to persist leaf: %w", err)
-	}
-
-	if err := p.persistMMRState(); err != nil {
-		return 0, Hash{}, fmt.Errorf("failed to persist MMR state: %w", err)
+	// Persist leaf + MMR state in a single transaction
+	if err := p.persistAll(idx, l); err != nil {
+		return 0, Hash{}, fmt.Errorf("failed to persist leaf and state: %w", err)
 	}
 
 	return idx, root, nil
@@ -68,9 +64,9 @@ func (p *PersistentMMR) loadFromStorage() error {
 	// Load MMR metadata (size, peaks, etc.)
 	var metaData []byte
 	err := p.db.View(func(tx *bbolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("mmr"))
-		if err != nil {
-			return err
+		bucket := tx.Bucket([]byte("mmr"))
+		if bucket == nil {
+			return nil
 		}
 		metaData = bucket.Get([]byte("metadata"))
 		return nil
@@ -90,13 +86,14 @@ func (p *PersistentMMR) loadFromStorage() error {
 		return fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
-	// Load all leaves
+	// Load all leaves and nodes in a single transaction
 	err = p.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte("mmr"))
 		if bucket == nil {
 			return nil
 		}
 
+		// Load leaves
 		for i := uint64(0); i < metadata.Size; i++ {
 			leafKey := p.leafKey(i)
 			leafData := bucket.Get(leafKey)
@@ -109,20 +106,18 @@ func (p *PersistentMMR) loadFromStorage() error {
 				return fmt.Errorf("failed to unmarshal leaf %d: %w", i, err)
 			}
 
-			// Add to in-memory MMR
 			p.leaves = append(p.leaves, leaf)
 		}
+
+		// Load all node trees from peaks within the same transaction
+		for _, peakPos := range metadata.Peaks {
+			p.loadNodeTreeFromBucket(bucket, peakPos)
+		}
+
 		return nil
 	})
 	if err != nil {
 		return err
-	}
-
-	// Load all nodes
-	for _, peakPos := range metadata.Peaks {
-		if err := p.loadNodeTree(peakPos); err != nil {
-			return fmt.Errorf("failed to load node tree at %d: %w", peakPos, err)
-		}
 	}
 
 	p.peaks = metadata.Peaks
@@ -130,71 +125,41 @@ func (p *PersistentMMR) loadFromStorage() error {
 	return nil
 }
 
-// loadNodeTree recursively loads nodes from storage.
-func (p *PersistentMMR) loadNodeTree(pos uint64) error {
-	var nodeData []byte
-	err := p.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte("mmr"))
-		if bucket == nil {
-			return nil
-		}
-		nodeKey := p.nodeKey(pos)
-		nodeData = bucket.Get(nodeKey)
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to load node %d: %w", pos, err)
-	}
+// loadNodeTreeFromBucket recursively loads nodes from a bucket within an existing transaction.
+func (p *PersistentMMR) loadNodeTreeFromBucket(bucket *bbolt.Bucket, pos uint64) {
+	nodeKey := p.nodeKey(pos)
+	nodeData := bucket.Get(nodeKey)
 	if nodeData == nil {
-		return nil // Node doesn't exist (might be a leaf)
+		return // Node doesn't exist (might be a leaf)
+	}
+
+	if len(nodeData) != 32 {
+		return
 	}
 
 	var hash Hash
-	if len(nodeData) != 32 {
-		return fmt.Errorf("invalid node data size: %d", len(nodeData))
-	}
 	copy(hash[:], nodeData)
 	p.nodes[pos] = hash
 
 	// Recursively load children if this is an internal node
 	height := p.getHeight(pos)
 	if height > 0 {
-		// Load left and right children
 		step := uint64(1) << (height - 1)
 		leftPos := pos - step
 		rightPos := pos - 1
 
-		if err := p.loadNodeTree(leftPos); err != nil {
-			return err
-		}
-		if err := p.loadNodeTree(rightPos); err != nil {
-			return err
-		}
+		p.loadNodeTreeFromBucket(bucket, leftPos)
+		p.loadNodeTreeFromBucket(bucket, rightPos)
 	}
-
-	return nil
 }
 
-// persistLeaf persists a single leaf to storage.
-func (p *PersistentMMR) persistLeaf(idx uint64, leaf Leaf) error {
+// persistAll persists a leaf, metadata, and all nodes in a single transaction.
+func (p *PersistentMMR) persistAll(idx uint64, leaf Leaf) error {
 	leafData, err := json.Marshal(leaf)
 	if err != nil {
 		return fmt.Errorf("failed to marshal leaf: %w", err)
 	}
 
-	return p.db.Update(func(tx *bbolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte("mmr"))
-		if err != nil {
-			return err
-		}
-		leafKey := p.leafKey(idx)
-		return bucket.Put(leafKey, leafData)
-	})
-}
-
-// persistMMRState persists the current MMR state.
-func (p *PersistentMMR) persistMMRState() error {
-	// Save metadata
 	metadata := struct {
 		Size  uint64   `json:"size"`
 		Peaks []uint64 `json:"peaks"`
@@ -212,6 +177,12 @@ func (p *PersistentMMR) persistMMRState() error {
 		bucket, err := tx.CreateBucketIfNotExists([]byte("mmr"))
 		if err != nil {
 			return err
+		}
+
+		// Save leaf
+		leafKey := p.leafKey(idx)
+		if err := bucket.Put(leafKey, leafData); err != nil {
+			return fmt.Errorf("failed to save leaf: %w", err)
 		}
 
 		// Save metadata

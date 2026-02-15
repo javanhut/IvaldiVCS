@@ -154,39 +154,11 @@ func diffStagedVsHead(casStore cas.CAS, ivaldiDir, workDir string) error {
 		return nil
 	}
 
-	// Scan workspace to get current file data
+	// Scan only staged files instead of full workspace
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
-	ignoreCache, _ := ignore.LoadPatternCache(workDir)
-	materializer.SetIgnorePatterns(ignoreCache)
-	currentIndex, err := materializer.ScanWorkspace()
+	stagedIndex, err := materializer.ScanSpecificFiles(stagedFiles)
 	if err != nil {
-		return fmt.Errorf("failed to scan workspace: %w", err)
-	}
-
-	wsLoader := wsindex.NewLoader(casStore)
-	allFiles, err := wsLoader.ListAll(currentIndex)
-	if err != nil {
-		return fmt.Errorf("failed to list files: %w", err)
-	}
-
-	// Filter to staged files
-	var stagedMetadata []wsindex.FileMetadata
-	stagedMap := make(map[string]bool)
-	for _, f := range stagedFiles {
-		stagedMap[f] = true
-	}
-
-	for _, file := range allFiles {
-		if stagedMap[file.Path] {
-			stagedMetadata = append(stagedMetadata, file)
-		}
-	}
-
-	// Build staged index
-	wsBuilder := wsindex.NewBuilder(casStore)
-	stagedIndex, err := wsBuilder.Build(stagedMetadata)
-	if err != nil {
-		return fmt.Errorf("failed to build staged index: %w", err)
+		return fmt.Errorf("failed to scan staged files: %w", err)
 	}
 
 	return showDiff(casStore, headIndex, stagedIndex, "HEAD", "staged")
@@ -378,13 +350,20 @@ func readFileContent(casStore cas.CAS, file *wsindex.FileMetadata) ([]byte, erro
 	return loader.ReadAll(file.FileRef)
 }
 
-// getHeadIndex returns the workspace index for the HEAD commit
-func getHeadIndex(casStore cas.CAS, ivaldiDir string) (wsindex.IndexRef, error) {
-	refsManager, err := refs.NewRefsManager(ivaldiDir)
-	if err != nil {
-		return wsindex.IndexRef{}, fmt.Errorf("failed to initialize refs: %w", err)
+// getHeadIndex returns the workspace index for the HEAD commit.
+// If rm is non-nil, it is reused; otherwise a new RefsManager is created.
+func getHeadIndex(casStore cas.CAS, ivaldiDir string, rm ...*refs.RefsManager) (wsindex.IndexRef, error) {
+	var refsManager *refs.RefsManager
+	if len(rm) > 0 && rm[0] != nil {
+		refsManager = rm[0]
+	} else {
+		var err error
+		refsManager, err = refs.NewRefsManager(ivaldiDir)
+		if err != nil {
+			return wsindex.IndexRef{}, fmt.Errorf("failed to initialize refs: %w", err)
+		}
+		defer refsManager.Close()
 	}
-	defer refsManager.Close()
 
 	currentTimeline, err := refsManager.GetCurrentTimeline()
 	if err != nil {
@@ -432,13 +411,20 @@ func getCommitIndex(casStore cas.CAS, commitHash [32]byte) (wsindex.IndexRef, er
 	return wsBuilder.Build(files)
 }
 
-// getCommitIndexByRef resolves a ref (seal name or hash) to a workspace index
-func getCommitIndexByRef(casStore cas.CAS, ivaldiDir, ref string) (wsindex.IndexRef, error) {
-	refsManager, err := refs.NewRefsManager(ivaldiDir)
-	if err != nil {
-		return wsindex.IndexRef{}, fmt.Errorf("failed to initialize refs: %w", err)
+// getCommitIndexByRef resolves a ref (seal name or hash) to a workspace index.
+// If rm is non-nil, it is reused; otherwise a new RefsManager is created.
+func getCommitIndexByRef(casStore cas.CAS, ivaldiDir, ref string, rm ...*refs.RefsManager) (wsindex.IndexRef, error) {
+	var refsManager *refs.RefsManager
+	if len(rm) > 0 && rm[0] != nil {
+		refsManager = rm[0]
+	} else {
+		var err error
+		refsManager, err = refs.NewRefsManager(ivaldiDir)
+		if err != nil {
+			return wsindex.IndexRef{}, fmt.Errorf("failed to initialize refs: %w", err)
+		}
+		defer refsManager.Close()
 	}
-	defer refsManager.Close()
 
 	// Try to resolve as seal name first
 	commitHash, _, _, err := refsManager.GetSealByName(ref)

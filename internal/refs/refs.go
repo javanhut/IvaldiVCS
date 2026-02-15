@@ -34,9 +34,11 @@ type Timeline struct {
 
 // RefsManager handles timeline and reference management
 type RefsManager struct {
-	ivaldiDir string
-	refsDir   string
-	db        *store.SharedDB
+	ivaldiDir      string
+	refsDir        string
+	db             *store.SharedDB
+	sealIndex      map[[32]byte]string
+	sealIndexBuilt bool
 }
 
 // NewRefsManager creates a new refs manager
@@ -584,7 +586,16 @@ func (rm *RefsManager) StoreSealName(sealName string, hash [32]byte, message str
 	// Format: hash_hex timestamp message
 	content := fmt.Sprintf("%s %d %s\n", hashHex, timestamp, message)
 
-	return os.WriteFile(sealPath, []byte(content), 0644)
+	if err := os.WriteFile(sealPath, []byte(content), 0644); err != nil {
+		return err
+	}
+
+	// Update in-memory index if already built
+	if rm.sealIndexBuilt {
+		rm.sealIndex[hash] = sealName
+	}
+
+	return nil
 }
 
 // GetSealByName retrieves seal information by name
@@ -622,47 +633,52 @@ func (rm *RefsManager) GetSealByName(sealName string) (hash [32]byte, timestamp 
 	return hash, timestamp, message, nil
 }
 
-// GetSealNameByHash retrieves seal name by hash (reverse lookup)
-func (rm *RefsManager) GetSealNameByHash(hash [32]byte) (string, error) {
+// buildSealIndex reads all seal files once and builds a hash→name map.
+func (rm *RefsManager) buildSealIndex() {
+	rm.sealIndex = make(map[[32]byte]string)
+	rm.sealIndexBuilt = true
+
 	sealsDir := filepath.Join(rm.refsDir, "seals")
 	if _, err := os.Stat(sealsDir); os.IsNotExist(err) {
-		return "", fmt.Errorf("no seals directory")
+		return
 	}
 
-	hashHex := hex.EncodeToString(hash[:])
-
-	// Walk through all seal files to find matching hash
-	var foundSealName string
-	err := filepath.Walk(sealsDir, func(path string, info os.FileInfo, err error) error {
+	filepath.Walk(sealsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil // Skip files we can't read
+			return nil
 		}
 
 		content := strings.TrimSpace(string(data))
 		parts := strings.SplitN(content, " ", 2)
 		if len(parts) < 1 {
-			return nil // Skip malformed files
+			return nil
 		}
 
-		if parts[0] == hashHex {
-			foundSealName = filepath.Base(path)
-			return fmt.Errorf("found") // Use error to break out of walk
+		hashBytes, err := hex.DecodeString(parts[0])
+		if err != nil || len(hashBytes) != 32 {
+			return nil
 		}
 
+		var h [32]byte
+		copy(h[:], hashBytes)
+		rm.sealIndex[h] = filepath.Base(path)
 		return nil
 	})
+}
 
-	if foundSealName != "" {
-		return foundSealName, nil
+// GetSealNameByHash retrieves seal name by hash (reverse lookup) using a lazy-init index.
+func (rm *RefsManager) GetSealNameByHash(hash [32]byte) (string, error) {
+	if !rm.sealIndexBuilt {
+		rm.buildSealIndex()
 	}
 
-	if err != nil && err.Error() == "found" {
-		return foundSealName, nil
+	if name, ok := rm.sealIndex[hash]; ok {
+		return name, nil
 	}
 
 	return "", fmt.Errorf("seal name not found for hash")

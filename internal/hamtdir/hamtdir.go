@@ -253,14 +253,45 @@ func (b *Builder) encodeInternal(node *Node) []byte {
 	return buf.Bytes()
 }
 
-// Loader reads directory HAMTs.
+// Loader reads directory HAMTs with an optional node cache.
 type Loader struct {
-	CAS cas.CAS
+	CAS   cas.CAS
+	cache map[cas.Hash]*Node
 }
+
+const maxCacheEntries = 1024
 
 // NewLoader creates a new Loader with the given CAS.
 func NewLoader(casStore cas.CAS) *Loader {
-	return &Loader{CAS: casStore}
+	return &Loader{
+		CAS:   casStore,
+		cache: make(map[cas.Hash]*Node),
+	}
+}
+
+// getNode retrieves a node, checking the cache first.
+func (l *Loader) getNode(hash cas.Hash) (*Node, error) {
+	if node, ok := l.cache[hash]; ok {
+		return node, nil
+	}
+
+	data, err := l.CAS.Get(hash)
+	if err != nil {
+		return nil, err
+	}
+
+	node, err := l.decodeNode(data)
+	if err != nil {
+		return nil, err
+	}
+
+	// Simple eviction: clear cache when it gets too large
+	if len(l.cache) >= maxCacheEntries {
+		l.cache = make(map[cas.Hash]*Node)
+	}
+	l.cache[hash] = node
+
+	return node, nil
 }
 
 // Lookup finds an entry by name in the directory.
@@ -275,14 +306,9 @@ func (l *Loader) ListAll(dir DirRef) ([]Entry, error) {
 
 // List returns direct entries in the directory (non-recursive).
 func (l *Loader) List(dir DirRef) ([]Entry, error) {
-	data, err := l.CAS.Get(dir.Hash)
+	node, err := l.getNode(dir.Hash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get directory node: %w", err)
-	}
-
-	node, err := l.decodeNode(data)
-	if err != nil {
-		return nil, err
 	}
 
 	if node.IsLeaf {
@@ -308,14 +334,9 @@ func (l *Loader) List(dir DirRef) ([]Entry, error) {
 
 // lookupNode recursively searches for an entry by name.
 func (l *Loader) lookupNode(nodeHash cas.Hash, name string, depth int) (*Entry, error) {
-	data, err := l.CAS.Get(nodeHash)
+	node, err := l.getNode(nodeHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node: %w", err)
-	}
-
-	node, err := l.decodeNode(data)
-	if err != nil {
-		return nil, err
 	}
 
 	if node.IsLeaf {
@@ -346,14 +367,9 @@ func (l *Loader) lookupNode(nodeHash cas.Hash, name string, depth int) (*Entry, 
 
 // listNode recursively lists all entries in a node.
 func (l *Loader) listNode(nodeHash cas.Hash) ([]Entry, error) {
-	data, err := l.CAS.Get(nodeHash)
+	node, err := l.getNode(nodeHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node: %w", err)
-	}
-
-	node, err := l.decodeNode(data)
-	if err != nil {
-		return nil, err
 	}
 
 	if node.IsLeaf {
@@ -552,14 +568,9 @@ func (l *Loader) WalkEntries(dir DirRef, walkFn func(path string, entry Entry) e
 
 // walkNode recursively walks a node with path prefix.
 func (l *Loader) walkNode(nodeHash cas.Hash, pathPrefix string, walkFn func(string, Entry) error) error {
-	data, err := l.CAS.Get(nodeHash)
+	node, err := l.getNode(nodeHash)
 	if err != nil {
 		return fmt.Errorf("failed to get node: %w", err)
-	}
-
-	node, err := l.decodeNode(data)
-	if err != nil {
-		return err
 	}
 
 	if node.IsLeaf {

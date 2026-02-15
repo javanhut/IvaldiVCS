@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -155,13 +156,9 @@ func (sm *ShelfManager) listShelves() ([]Shelf, error) {
 	}
 
 	// Sort by creation time (newest first)
-	for i := 0; i < len(shelves)-1; i++ {
-		for j := i + 1; j < len(shelves); j++ {
-			if shelves[j].CreatedAt.After(shelves[i].CreatedAt) {
-				shelves[i], shelves[j] = shelves[j], shelves[i]
-			}
-		}
-	}
+	sort.Slice(shelves, func(i, j int) bool {
+		return shelves[i].CreatedAt.After(shelves[j].CreatedAt)
+	})
 
 	return shelves, nil
 }
@@ -197,7 +194,7 @@ func (sm *ShelfManager) removeShelf(shelfID string) error {
 func (sm *ShelfManager) saveShelf(shelf *Shelf) error {
 	shelfPath := filepath.Join(sm.shelfDir, shelf.ID+".json")
 
-	data, err := json.MarshalIndent(shelf, "", "  ")
+	data, err := json.Marshal(shelf)
 	if err != nil {
 		return fmt.Errorf("failed to marshal shelf: %w", err)
 	}

@@ -73,8 +73,14 @@ var statusCmd = &cobra.Command{
 			log.Printf("Warning: Failed to load ignore patterns: %v", err)
 		}
 
+		// Get known files once (reuse for both status and seal info)
+		knownFiles, err := getKnownFiles(ivaldiDir, refsManager)
+		if err != nil {
+			log.Printf("Warning: Failed to get known files: %v", err)
+		}
+
 		// Get file statuses
-		fileStatuses, err := getFileStatuses(workDir, ivaldiDir, patternCache)
+		fileStatuses, err := getFileStatuses(workDir, ivaldiDir, patternCache, knownFiles)
 		if err != nil {
 			return fmt.Errorf("failed to get file statuses: %w", err)
 		}
@@ -83,7 +89,7 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("On timeline %s\n", colors.Bold(currentTimeline))
 
 		// Show information about the last seal if available
-		err = displayLastSealInfo(refsManager, currentTimeline, ivaldiDir)
+		err = displayLastSealInfo(refsManager, currentTimeline, knownFiles)
 		if err != nil {
 			// Don't fail if we can't get seal info
 		}
@@ -194,7 +200,7 @@ func init() {
 }
 
 // getFileStatuses analyzes the working directory and returns file status information
-func getFileStatuses(workDir, ivaldiDir string, patternCache *ignore.PatternCache) ([]FileStatusInfo, error) {
+func getFileStatuses(workDir, ivaldiDir string, patternCache *ignore.PatternCache, knownFiles map[string][32]byte) ([]FileStatusInfo, error) {
 	var fileStatuses []FileStatusInfo
 
 	// Get staged files
@@ -203,10 +209,10 @@ func getFileStatuses(workDir, ivaldiDir string, patternCache *ignore.PatternCach
 		log.Printf("Warning: Failed to get staged files: %v", err)
 	}
 
-	// Get known files from last snapshot (if any)
-	knownFiles, err := getKnownFiles(ivaldiDir)
-	if err != nil {
-		log.Printf("Warning: Failed to get known files: %v", err)
+	// Build staged map for O(1) lookups
+	stagedMap := make(map[string]bool, len(stagedFiles))
+	for _, f := range stagedFiles {
+		stagedMap[f] = true
 	}
 
 	// Walk the working directory
@@ -249,25 +255,11 @@ func getFileStatuses(workDir, ivaldiDir string, patternCache *ignore.PatternCach
 			return nil
 		}
 
-		// Check if file is staged
-		isStaged := false
-		for _, stagedFile := range stagedFiles {
-			if stagedFile == relPath {
-				isStaged = true
-				break
-			}
-		}
+		// O(1) staged check
+		isStaged := stagedMap[relPath]
 
-		// Check if file was known in previous snapshot
-		wasKnown := false
-		var knownHash [32]byte
-		for filePath, hash := range knownFiles {
-			if filePath == relPath {
-				wasKnown = true
-				knownHash = hash
-				break
-			}
-		}
+		// O(1) known file check
+		knownHash, wasKnown := knownFiles[relPath]
 
 		if isStaged {
 			// File is staged - determine if it's new or modified
@@ -319,14 +311,8 @@ func getFileStatuses(workDir, ivaldiDir string, patternCache *ignore.PatternCach
 	for filePath := range knownFiles {
 		fullPath := filepath.Join(workDir, filePath)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			// File was deleted
-			isStaged := false
-			for _, stagedFile := range stagedFiles {
-				if stagedFile == filePath {
-					isStaged = true
-					break
-				}
-			}
+			// O(1) staged check
+			isStaged := stagedMap[filePath]
 
 			if isStaged {
 				// Deletion is staged
@@ -372,23 +358,28 @@ func getStagedFiles(ivaldiDir string) ([]string, error) {
 }
 
 
-// getKnownFiles reads files from the last commit/seal for proper status tracking
-func getKnownFiles(ivaldiDir string) (map[string][32]byte, error) {
+// getKnownFiles reads files from the last commit/seal for proper status tracking.
+// If refsManager is non-nil, it is reused; otherwise a new one is created internally.
+func getKnownFiles(ivaldiDir string, refsManager *refs.RefsManager) (map[string][32]byte, error) {
 	knownFiles := make(map[string][32]byte)
 
-	// Get the current timeline and its last commit
-	refsManager, err := refs.NewRefsManager(ivaldiDir)
-	if err != nil {
-		return knownFiles, nil // No refs system, treat as empty
+	// Use provided RefsManager or create a new one
+	rm := refsManager
+	if rm == nil {
+		var err error
+		rm, err = refs.NewRefsManager(ivaldiDir)
+		if err != nil {
+			return knownFiles, nil // No refs system, treat as empty
+		}
+		defer rm.Close()
 	}
-	defer refsManager.Close()
 
-	currentTimeline, err := refsManager.GetCurrentTimeline()
+	currentTimeline, err := rm.GetCurrentTimeline()
 	if err != nil {
 		return knownFiles, nil // No current timeline
 	}
 
-	timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
+	timeline, err := rm.GetTimeline(currentTimeline, refs.LocalTimeline)
 	if err != nil {
 		return knownFiles, nil // Timeline doesn't exist
 	}
@@ -453,7 +444,7 @@ func computeFileHash(filePath string) ([32]byte, error) {
 }
 
 // displayLastSealInfo shows information about the last seal and its contents
-func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline, ivaldiDir string) error {
+func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline string, knownFiles map[string][32]byte) error {
 	timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
 	if err != nil {
 		return err
@@ -472,12 +463,6 @@ func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline, ivaldiD
 		// Fallback to short hash
 		shortHash := hex.EncodeToString(timeline.Blake3Hash[:])[:8]
 		fmt.Printf("Last seal: %s\n", colors.Cyan(shortHash))
-	}
-
-	// Get files from the last commit
-	knownFiles, err := getKnownFiles(ivaldiDir)
-	if err != nil {
-		return err
 	}
 
 	if len(knownFiles) > 0 {
