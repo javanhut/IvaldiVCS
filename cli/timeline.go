@@ -300,6 +300,8 @@ var switchTimelineCmd = &cobra.Command{
 		}
 
 		materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+		ignoreCache, _ := ignore.LoadPatternCache(workDir)
+		materializer.SetIgnorePatterns(ignoreCache)
 
 		// Materialize the target timeline with auto-shelving enabled
 		// This will automatically stash uncommitted changes and restore any existing shelf

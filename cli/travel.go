@@ -14,6 +14,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/spf13/cobra"
@@ -621,6 +622,8 @@ func createDivergentTimeline(casStore cas.CAS, refsManager *refs.RefsManager, iv
 
 	// Switch to new timeline
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+	ignoreCache, _ := ignore.LoadPatternCache(workDir)
+	materializer.SetIgnorePatterns(ignoreCache)
 	err = materializer.MaterializeTimeline(newTimelineName)
 	if err != nil {
 		return fmt.Errorf("failed to switch to new timeline: %w", err)
@@ -648,6 +651,8 @@ func overwriteTimeline(casStore cas.CAS, refsManager *refs.RefsManager, ivaldiDi
 
 	// Materialize workspace to this seal
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+	ignoreCache, _ := ignore.LoadPatternCache(workDir)
+	materializer.SetIgnorePatterns(ignoreCache)
 
 	// Get timeline with updated hash
 	timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)

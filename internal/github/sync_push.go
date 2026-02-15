@@ -41,6 +41,7 @@ type fileHashResult struct {
 
 // computeFileDeltas compares two commits and returns changed files using parallel hash computation
 func (rs *RepoSyncer) computeFileDeltas(parentHash, currentHash cas.Hash) ([]FileChange, error) {
+	fmt.Printf("Computing file changes...\n")
 	commitReader := commit.NewCommitReader(rs.casStore)
 
 	// Determine worker count

@@ -110,6 +110,7 @@ func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
 // It respects ignore patterns set via SetIgnorePatterns and handles transient files
 // (files that disappear between discovery and read) gracefully.
 func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
+	fmt.Fprintf(os.Stderr, "Scanning workspace...\n")
 	var files []wsindex.FileMetadata
 
 	err := filepath.WalkDir(m.WorkDir, func(path string, d fs.DirEntry, err error) error {
@@ -195,6 +196,8 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 	if err != nil {
 		return wsindex.IndexRef{}, fmt.Errorf("failed to scan workspace: %w", err)
 	}
+
+	fmt.Fprintf(os.Stderr, "Scanned %d files\n", len(files))
 
 	// Build workspace index
 	wsBuilder := wsindex.NewBuilder(m.CAS)
@@ -293,6 +296,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 
 	// Auto-shelf current changes before switching (if enabled and switching between different timelines)
 	if enableAutoShelf && currentTimelineName != "" && currentTimelineName != timelineName {
+		fmt.Printf("Shelving current workspace...\n")
 		shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
 
 		// Always remove any existing auto-shelf for the current timeline first
@@ -368,6 +372,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	}
 
 	// Compute differences between current state and target
+	fmt.Printf("Computing workspace changes...\n")
 	differ := diffmerge.NewDiffer(m.CAS)
 	diff, err := differ.DiffWorkspaces(currentState.Index, targetIndex)
 	if err != nil {
@@ -375,6 +380,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	}
 
 	// Apply changes to working directory
+	fmt.Printf("Applying %d changes...\n", len(diff.FileChanges))
 	err = m.ApplyChangesToWorkspace(diff)
 	if err != nil {
 		return fmt.Errorf("failed to apply changes to workspace: %w", err)
@@ -424,6 +430,7 @@ func (m *Materializer) CreateTargetIndex(timeline refs.Timeline) (wsindex.IndexR
 	}
 
 	// Create file metadata for each file
+	fmt.Fprintf(os.Stderr, "Reading %d files from seal...\n", len(filePaths))
 	var files []wsindex.FileMetadata
 	for _, filePath := range filePaths {
 		// Get file content to determine size and checksum
