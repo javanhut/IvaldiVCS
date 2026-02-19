@@ -368,6 +368,55 @@ var removeTimelineCmd = &cobra.Command{
 	},
 }
 
+var renameTimelineCmd = &cobra.Command{
+	Use:     "rename <old-name> <new-name>",
+	Aliases: []string{"rn", "mv"},
+	Short:   "Rename a timeline",
+	Long: `Renames a local timeline. If the renamed timeline is the current one, HEAD is updated automatically.
+Any corresponding remote tracking reference is also renamed.
+
+When you upload after renaming, the new name will be used as the remote branch name.
+
+Example:
+  ivaldi timeline rename master main
+  ivaldi upload                          # pushes to 'main' on remote`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		oldName := args[0]
+		newName := args[1]
+
+		// Check if we're in an Ivaldi repository
+		ivaldiDir := ".ivaldi"
+		if _, err := os.Stat(ivaldiDir); os.IsNotExist(err) {
+			return fmt.Errorf("not in an Ivaldi repository (no .ivaldi directory found)")
+		}
+
+		// Initialize refs manager
+		refsManager, err := refs.NewRefsManager(ivaldiDir)
+		if err != nil {
+			return fmt.Errorf("failed to initialize refs manager: %w", err)
+		}
+		defer refsManager.Close()
+
+		// Perform the rename
+		if err := refsManager.RenameTimeline(oldName, newName, refs.LocalTimeline); err != nil {
+			return fmt.Errorf("failed to rename timeline: %w", err)
+		}
+
+		fmt.Printf("Renamed timeline '%s' -> '%s'\n", oldName, newName)
+
+		// Check if HEAD was updated
+		currentTimeline, err := refsManager.GetCurrentTimeline()
+		if err == nil && currentTimeline == newName {
+			fmt.Printf("HEAD updated to '%s'\n", newName)
+		}
+
+		fmt.Printf("Next upload will push to '%s' on remote\n", newName)
+
+		return nil
+	},
+}
+
 // createCommitFromWorkspace creates a commit object from the current workspace state
 // and stores the commit hash in the provided baseHashes array.
 // If preScannedIndex is non-nil, it is used instead of rescanning the workspace.

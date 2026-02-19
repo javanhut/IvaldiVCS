@@ -61,7 +61,7 @@ func init() {
 
 	// Timeline management commands
 	rootCmd.AddCommand(timelineCmd)
-	timelineCmd.AddCommand(createTimelineCmd, switchTimelineCmd, listTimelineCmd, removeTimelineCmd)
+	timelineCmd.AddCommand(createTimelineCmd, switchTimelineCmd, listTimelineCmd, removeTimelineCmd, renameTimelineCmd)
 	timelineCmd.AddCommand(butterflyCmd)
 	butterflyCmd.AddCommand(butterflyUpCmd, butterflyDownCmd, butterflyRemoveCmd)
 

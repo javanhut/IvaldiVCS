@@ -351,6 +351,57 @@ func (rm *RefsManager) TimelineExists(name string, timelineType TimelineType) bo
 	return err == nil
 }
 
+// RenameTimeline renames a timeline from oldName to newName.
+// It renames the ref file, updates HEAD if this is the current timeline,
+// and renames the corresponding remote tracking ref if one exists.
+func (rm *RefsManager) RenameTimeline(oldName, newName string, timelineType TimelineType) error {
+	// Verify old timeline exists
+	if !rm.TimelineExists(oldName, timelineType) {
+		return fmt.Errorf("timeline '%s' does not exist", oldName)
+	}
+
+	// Verify new name doesn't already exist
+	if rm.TimelineExists(newName, timelineType) {
+		return fmt.Errorf("timeline '%s' already exists", newName)
+	}
+
+	// Rename the ref file
+	oldPath := rm.getRefPath(oldName, timelineType)
+	newPath := rm.getRefPath(newName, timelineType)
+
+	// Ensure parent directory exists for new path
+	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+		return fmt.Errorf("create ref parent dir: %w", err)
+	}
+
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("rename timeline ref: %w", err)
+	}
+
+	// Update HEAD if this was the current timeline
+	if timelineType == LocalTimeline {
+		currentTimeline, err := rm.GetCurrentTimeline()
+		if err == nil && currentTimeline == oldName {
+			if err := rm.SetCurrentTimeline(newName); err != nil {
+				// Try to roll back the rename
+				os.Rename(newPath, oldPath)
+				return fmt.Errorf("update HEAD: %w", err)
+			}
+		}
+
+		// Rename remote tracking ref if it exists
+		if rm.TimelineExists(oldName, RemoteTimeline) {
+			oldRemotePath := rm.getRefPath(oldName, RemoteTimeline)
+			newRemotePath := rm.getRefPath(newName, RemoteTimeline)
+			if err := os.MkdirAll(filepath.Dir(newRemotePath), 0755); err == nil {
+				os.Rename(oldRemotePath, newRemotePath) // Best-effort
+			}
+		}
+	}
+
+	return nil
+}
+
 // GetTimelineSyncStatus compares local and remote timelines
 type TimelineSyncStatus struct {
 	Name          string
