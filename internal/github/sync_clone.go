@@ -14,8 +14,9 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/logging"
 )
 
-// CloneRepository clones a GitHub repository to the local workspace
-func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, depth int, skipHistory bool, includeTags bool) error {
+// CloneRepository clones a GitHub repository to the local workspace.
+// Returns the actual default branch name from the repository.
+func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, depth int, skipHistory bool, includeTags bool) (string, error) {
 	fmt.Printf("Cloning %s/%s from GitHub...\n", owner, repo)
 
 	// If skip-history is set, try to download archive directly without API calls
@@ -31,10 +32,10 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 				fmt.Printf("Extracted %d files from archive (branch: %s)\n", fileCount, branchName)
 				err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo))
 				if err != nil {
-					return fmt.Errorf("failed to create Ivaldi commit: %w", err)
+					return "", fmt.Errorf("failed to create Ivaldi commit: %w", err)
 				}
 				fmt.Printf("Successfully cloned snapshot from %s/%s\n", owner, repo)
-				return nil
+				return branchName, nil
 			}
 		}
 
@@ -45,7 +46,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 
 		repoInfo, err := rs.client.GetRepository(ctx, owner, repo)
 		if err != nil {
-			return fmt.Errorf("failed to download repository (tried branches 'main' and 'master', then API lookup failed): %w\n\n"+
+			return "", fmt.Errorf("failed to download repository (tried branches 'main' and 'master', then API lookup failed): %w\n\n"+
 				"Note: This could mean:\n"+
 				"  - The repository doesn't exist or is private\n"+
 				"  - Check the repository name for typos\n"+
@@ -54,7 +55,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 
 		defaultBranch := repoInfo.DefaultBranch
 		if defaultBranch == "" {
-			return fmt.Errorf("repository '%s/%s' exists but has no default branch configured.\n"+
+			return "", fmt.Errorf("repository '%s/%s' exists but has no default branch configured.\n"+
 				"This usually means the repository is empty or misconfigured", owner, repo)
 		}
 
@@ -63,20 +64,20 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 		fileCount, err := rs.downloadAndExtractArchive(ctx, owner, repo, defaultBranch)
 		if err != nil {
 			if repoInfo.Size == 0 {
-				return fmt.Errorf("repository '%s/%s' exists but appears to be empty (no commits).\n"+
+				return "", fmt.Errorf("repository '%s/%s' exists but appears to be empty (no commits).\n"+
 					"Initialize the repository on GitHub first, or push content to it before downloading", owner, repo)
 			}
-			return fmt.Errorf("failed to download repository archive for branch '%s': %w", defaultBranch, err)
+			return "", fmt.Errorf("failed to download repository archive for branch '%s': %w", defaultBranch, err)
 		}
 
 		fmt.Printf("Extracted %d files from archive (branch: %s)\n", fileCount, defaultBranch)
 		err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo))
 		if err != nil {
-			return fmt.Errorf("failed to create Ivaldi commit: %w", err)
+			return "", fmt.Errorf("failed to create Ivaldi commit: %w", err)
 		}
 
 		fmt.Printf("Successfully cloned snapshot from %s/%s\n", owner, repo)
-		return nil
+		return defaultBranch, nil
 	}
 
 	// Check rate limits before API calls
@@ -85,7 +86,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 	// Get repository info
 	repoInfo, err := rs.client.GetRepository(ctx, owner, repo)
 	if err != nil {
-		return fmt.Errorf("failed to get repository info: %w", err)
+		return "", fmt.Errorf("failed to get repository info: %w", err)
 	}
 
 	fmt.Printf("Repository: %s\n", repoInfo.FullName)
@@ -97,13 +98,13 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 	// Get the default branch
 	branch, err := rs.client.GetBranch(ctx, owner, repo, repoInfo.DefaultBranch)
 	if err != nil {
-		return fmt.Errorf("failed to get branch info: %w", err)
+		return "", fmt.Errorf("failed to get branch info: %w", err)
 	}
 
 	// Check if we should skip history migration (backward compatibility)
 	if skipHistory {
 		fmt.Println("Skipping history migration, downloading latest snapshot only...")
-		return rs.cloneSnapshot(ctx, owner, repo, branch.Commit.SHA, repoInfo.DefaultBranch)
+		return repoInfo.DefaultBranch, rs.cloneSnapshot(ctx, owner, repo, branch.Commit.SHA, repoInfo.DefaultBranch)
 	}
 
 	// Fetch commit history
@@ -117,11 +118,11 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 
 	commits, err := rs.client.ListCommits(ctx, owner, repo, repoInfo.DefaultBranch, depth)
 	if err != nil {
-		return fmt.Errorf("failed to fetch commit history: %w", err)
+		return "", fmt.Errorf("failed to fetch commit history: %w", err)
 	}
 
 	if len(commits) == 0 {
-		return fmt.Errorf("no commits found in repository")
+		return "", fmt.Errorf("no commits found in repository")
 	}
 
 	if depth == 0 {
@@ -133,7 +134,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 	// Import commits in chronological order (reverse the list)
 	err = rs.importCommitHistory(ctx, owner, repo, commits)
 	if err != nil {
-		return fmt.Errorf("failed to import commit history: %w", err)
+		return "", fmt.Errorf("failed to import commit history: %w", err)
 	}
 
 	// Import tags if requested
@@ -146,7 +147,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 	}
 
 	fmt.Printf("Successfully cloned %s/%s with %d commits\n", owner, repo, len(commits))
-	return nil
+	return repoInfo.DefaultBranch, nil
 }
 
 // cloneSnapshot downloads only the latest snapshot without history (backward compatibility)

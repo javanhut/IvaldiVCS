@@ -14,6 +14,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/workspace"
 	"github.com/spf13/cobra"
@@ -239,6 +240,8 @@ func displayWorkspaceStatus(ivaldiDir, workDir string) error {
 
 	// Create materializer to get workspace status
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+	ignoreCache, _ := ignore.LoadPatternCache(workDir)
+	materializer.SetIgnorePatterns(ignoreCache)
 	status, err := materializer.GetWorkspaceStatus()
 	if err != nil {
 		return fmt.Errorf("failed to get workspace status: %w", err)

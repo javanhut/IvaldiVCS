@@ -398,8 +398,11 @@ Example:
 		}
 		defer refsManager.Close()
 
+		// Check --force flag
+		force, _ := cmd.Flags().GetBool("force")
+
 		// Perform the rename
-		if err := refsManager.RenameTimeline(oldName, newName, refs.LocalTimeline); err != nil {
+		if err := refsManager.RenameTimeline(oldName, newName, refs.LocalTimeline, force); err != nil {
 			return fmt.Errorf("failed to rename timeline: %w", err)
 		}
 
@@ -506,4 +509,8 @@ func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimelin
 	}
 
 	return nil
+}
+
+func init() {
+	renameTimelineCmd.Flags().BoolP("force", "f", false, "Overwrite destination timeline if it already exists")
 }

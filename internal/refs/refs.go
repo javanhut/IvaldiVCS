@@ -354,15 +354,33 @@ func (rm *RefsManager) TimelineExists(name string, timelineType TimelineType) bo
 // RenameTimeline renames a timeline from oldName to newName.
 // It renames the ref file, updates HEAD if this is the current timeline,
 // and renames the corresponding remote tracking ref if one exists.
-func (rm *RefsManager) RenameTimeline(oldName, newName string, timelineType TimelineType) error {
+// If force is true, an existing destination timeline will be removed first,
+// unless it is the current HEAD timeline.
+func (rm *RefsManager) RenameTimeline(oldName, newName string, timelineType TimelineType, force bool) error {
 	// Verify old timeline exists
 	if !rm.TimelineExists(oldName, timelineType) {
 		return fmt.Errorf("timeline '%s' does not exist", oldName)
 	}
 
-	// Verify new name doesn't already exist
+	// Check if new name already exists
 	if rm.TimelineExists(newName, timelineType) {
-		return fmt.Errorf("timeline '%s' already exists", newName)
+		if !force {
+			return fmt.Errorf("timeline '%s' already exists", newName)
+		}
+
+		// Safety: refuse to overwrite the current HEAD timeline
+		if timelineType == LocalTimeline {
+			currentTimeline, err := rm.GetCurrentTimeline()
+			if err == nil && currentTimeline == newName {
+				return fmt.Errorf("cannot force-overwrite '%s': it is the current HEAD timeline", newName)
+			}
+		}
+
+		// Remove the existing destination ref file
+		destPath := rm.getRefPath(newName, timelineType)
+		if err := os.Remove(destPath); err != nil {
+			return fmt.Errorf("failed to remove existing timeline '%s': %w", newName, err)
+		}
 	}
 
 	// Rename the ref file

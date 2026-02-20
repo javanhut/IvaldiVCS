@@ -58,12 +58,13 @@ func NewCloner(ivaldiDir, workDir string) (*Cloner, error) {
 	}, nil
 }
 
-// Clone clones a Git repository and converts it to Ivaldi format
-func (c *Cloner) Clone(ctx context.Context, opts *CloneOptions) error {
+// Clone clones a Git repository and converts it to Ivaldi format.
+// Returns the default branch name from the cloned repository.
+func (c *Cloner) Clone(ctx context.Context, opts *CloneOptions) (string, error) {
 	// Detect authentication
 	auth, err := DetectAuth(opts.URL, opts.Username, opts.Password, opts.Token, opts.SSHKey)
 	if err != nil {
-		return fmt.Errorf("authentication setup failed: %w", err)
+		return "", fmt.Errorf("authentication setup failed: %w", err)
 	}
 	opts.Auth = auth
 
@@ -89,37 +90,43 @@ func (c *Cloner) Clone(ctx context.Context, opts *CloneOptions) error {
 	// Clone to temporary directory
 	tempDir, err := os.MkdirTemp("", "ivaldi-git-clone-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
+		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
 	fmt.Println("Cloning repository using Git protocol...")
 	repo, err := git.PlainCloneContext(ctx, tempDir, false, cloneOpts)
 	if err != nil {
-		return c.handleCloneError(err, opts.URL)
+		return "", c.handleCloneError(err, opts.URL)
 	}
 
 	// Check if cloned repo has existing Ivaldi data
 	ivaldiSrcDir := filepath.Join(tempDir, ".ivaldi")
 	if info, err := os.Stat(ivaldiSrcDir); err == nil && info.IsDir() {
 		fmt.Println("Found existing Ivaldi data in repository")
-		return c.importExistingIvaldiData(ivaldiSrcDir, tempDir)
+		return "", c.importExistingIvaldiData(ivaldiSrcDir, tempDir)
 	}
 
 	// Get HEAD reference
 	ref, err := repo.Head()
 	if err != nil {
-		return fmt.Errorf("failed to get HEAD: %w", err)
+		return "", fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	// Extract default branch name from HEAD reference (e.g., "refs/heads/master" -> "master")
+	defaultBranch := "main"
+	if ref.Name().IsBranch() {
+		defaultBranch = ref.Name().Short()
 	}
 
 	// Convert based on mode
 	if opts.SkipHistory {
 		fmt.Println("Extracting files without history...")
-		return c.checkoutFiles(repo, ref)
+		return defaultBranch, c.checkoutFiles(repo, ref)
 	}
 
 	fmt.Println("Importing commit history...")
-	return c.importHistory(repo, ref, opts.IncludeTags)
+	return defaultBranch, c.importHistory(repo, ref, opts.IncludeTags)
 }
 
 // handleCloneError provides user-friendly error messages
@@ -192,6 +199,12 @@ func (c *Cloner) importHistory(repo *git.Repository, head *plumbing.Reference, i
 	}
 	defer refsManager.Close()
 
+	// Read the current timeline from HEAD
+	currentTimeline, err := refsManager.GetCurrentTimeline()
+	if err != nil {
+		currentTimeline = "main"
+	}
+
 	// Initialize MMR and commit builder
 	mmr, err := history.NewPersistentMMR(c.casStore, c.ivaldiDir)
 	if err != nil {
@@ -261,7 +274,7 @@ func (c *Cloner) importHistory(repo *git.Repository, head *plumbing.Reference, i
 		copy(hashArray[:], commitHash[:])
 
 		err = refsManager.UpdateTimeline(
-			"main",
+			currentTimeline,
 			refs.LocalTimeline,
 			hashArray,
 			[32]byte{},

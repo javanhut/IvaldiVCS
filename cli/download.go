@@ -226,9 +226,17 @@ func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory b
 	defer cancel()
 
 	fmt.Printf("Downloading from GitHub: %s/%s...\n", owner, repo)
-	if err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags); err != nil {
+	defaultBranch, err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags)
+	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	// Rename timeline if actual default branch differs from "main"
+	if defaultBranch != "" && defaultBranch != "main" {
+		if err := refsManager.RenameTimeline("main", defaultBranch, refs.LocalTimeline, false); err != nil {
+			log.Printf("Warning: Failed to rename timeline to '%s': %v", defaultBranch, err)
+		}
 	}
 
 	// Automatically detect and convert Git submodules (enabled by default)
@@ -425,9 +433,17 @@ func handleGitLabDownload(rawURL string, args []string, baseURL string, depth in
 	} else {
 		fmt.Printf("Downloading from GitLab: %s/%s...\n", owner, repo)
 	}
-	if err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags); err != nil {
+	defaultBranch, err := syncer.CloneRepository(ctx, owner, repo, depth, skipHistory, includeTags)
+	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	// Rename timeline if actual default branch differs from "main"
+	if defaultBranch != "" && defaultBranch != "main" {
+		if err := refsManager.RenameTimeline("main", defaultBranch, refs.LocalTimeline, false); err != nil {
+			log.Printf("Warning: Failed to rename timeline to '%s': %v", defaultBranch, err)
+		}
 	}
 
 	fmt.Printf("Successfully downloaded repository from GitLab\n")
@@ -543,9 +559,17 @@ func handleGenericGitDownload(rawURL string, args []string, depth int, skipHisto
 		SSHKey:      sshKey,
 	}
 
-	if err := cloner.Clone(ctx, cloneOpts); err != nil {
+	defaultBranch, err := cloner.Clone(ctx, cloneOpts)
+	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	// Rename timeline if actual default branch differs from "main"
+	if defaultBranch != "" && defaultBranch != "main" {
+		if err := refsManager.RenameTimeline("main", defaultBranch, refs.LocalTimeline, false); err != nil {
+			log.Printf("Warning: Failed to rename timeline to '%s': %v", defaultBranch, err)
+		}
 	}
 
 	fmt.Printf("Successfully downloaded repository from Git server\n")

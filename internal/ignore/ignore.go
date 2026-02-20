@@ -12,6 +12,16 @@ import (
 	"strings"
 )
 
+// DefaultPatterns are built-in ignore patterns for common VCS and tool directories.
+// These are always applied, even without an .ivaldiignore file.
+var DefaultPatterns = []string{
+	".git/",
+	".svn/",
+	".hg/",
+	".fossil/",
+	".claude/",
+}
+
 // doubleStarPattern holds a pre-split ** glob pattern.
 type doubleStarPattern struct {
 	prefix string // Part before **
@@ -158,11 +168,15 @@ func LoadPatterns(workDir string) ([]string, error) {
 }
 
 // LoadPatternCache is a convenience function that loads patterns and creates a cache.
-// Returns a non-nil cache even on error (with empty patterns).
+// It prepends DefaultPatterns before any user-defined patterns from .ivaldiignore.
+// Returns a non-nil cache even on error (with default patterns only).
 func LoadPatternCache(workDir string) (*PatternCache, error) {
 	patterns, err := LoadPatterns(workDir)
+	combined := make([]string, 0, len(DefaultPatterns)+len(patterns))
+	combined = append(combined, DefaultPatterns...)
+	combined = append(combined, patterns...)
 	if err != nil {
-		return NewPatternCache(nil), err
+		return NewPatternCache(DefaultPatterns), err
 	}
-	return NewPatternCache(patterns), nil
+	return NewPatternCache(combined), nil
 }

@@ -244,8 +244,8 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 			if err != nil {
 				logging.Warn("Failed to create initial commit", "error", err)
 			} else if commitHash != nil {
-				// Update main timeline to point to the initial commit
-				logging.Info("Updating main timeline with initial commit...")
+				// Update current timeline to point to the initial commit
+				logging.Info("Updating current timeline with initial commit...")
 
 				// Re-open refs manager to update the timeline
 				refsManager2, err := refs.NewRefsManager(ivaldiDir)
@@ -254,18 +254,24 @@ func forgeCommand(cmd *cobra.Command, args []string) {
 				} else {
 					defer refsManager2.Close()
 
-					// Update main timeline with the commit hash
+					// Read the current timeline from HEAD (set by InitializeFromGit)
+					currentTimeline, err := refsManager2.GetCurrentTimeline()
+					if err != nil {
+						currentTimeline = "main" // fallback for non-git repos
+					}
+
+					// Update timeline with the commit hash
 					err = refsManager2.UpdateTimeline(
-						"main",
+						currentTimeline,
 						refs.LocalTimeline,
 						*commitHash, // Use the actual commit hash
 						[32]byte{},  // No SHA256 for now
 						"",          // No Git SHA1
 					)
 					if err != nil {
-						logging.Warn("Failed to update main timeline with initial commit", "error", err)
+						logging.Warn("Failed to update timeline with initial commit", "timeline", currentTimeline, "error", err)
 					} else {
-						logging.Info("Successfully updated main timeline with initial commit")
+						logging.Info("Successfully updated timeline with initial commit", "timeline", currentTimeline)
 					}
 				}
 			}

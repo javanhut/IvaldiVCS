@@ -58,14 +58,15 @@ func NewRepoSyncerWithURL(ivaldiDir, workDir string, owner, repo, baseURL string
 	}, nil
 }
 
-// CloneRepository clones a GitLab repository without using Git
-func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, depth int, skipHistory bool, includeTags bool) error {
+// CloneRepository clones a GitLab repository without using Git.
+// Returns the actual default branch name from the repository.
+func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, depth int, skipHistory bool, includeTags bool) (string, error) {
 	fmt.Printf("Cloning %s/%s from GitLab...\n", owner, repo)
 
 	// Get project info
 	project, err := rs.client.GetProject(ctx, owner, repo)
 	if err != nil {
-		return fmt.Errorf("failed to get project info: %w", err)
+		return "", fmt.Errorf("failed to get project info: %w", err)
 	}
 
 	fmt.Printf("Project: %s\n", project.PathWithNamespace)
@@ -77,13 +78,13 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 	// Get the default branch
 	branch, err := rs.client.GetBranch(ctx, owner, repo, project.DefaultBranch)
 	if err != nil {
-		return fmt.Errorf("failed to get branch info: %w", err)
+		return "", fmt.Errorf("failed to get branch info: %w", err)
 	}
 
 	// Check if we should skip history migration (backward compatibility)
 	if skipHistory {
 		fmt.Println("Skipping history migration, downloading latest snapshot only...")
-		return rs.cloneSnapshot(ctx, owner, repo, branch.Commit.ID, project.DefaultBranch)
+		return project.DefaultBranch, rs.cloneSnapshot(ctx, owner, repo, branch.Commit.ID, project.DefaultBranch)
 	}
 
 	// Fetch commit history
@@ -97,11 +98,11 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 
 	commits, err := rs.client.ListCommits(ctx, owner, repo, project.DefaultBranch, depth)
 	if err != nil {
-		return fmt.Errorf("failed to fetch commit history: %w", err)
+		return "", fmt.Errorf("failed to fetch commit history: %w", err)
 	}
 
 	if len(commits) == 0 {
-		return fmt.Errorf("no commits found in repository")
+		return "", fmt.Errorf("no commits found in repository")
 	}
 
 	fmt.Printf("Found %d commits to import\n", len(commits))
@@ -109,7 +110,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 	// Import commits in chronological order (reverse the list)
 	err = rs.importCommitHistory(ctx, owner, repo, commits)
 	if err != nil {
-		return fmt.Errorf("failed to import commit history: %w", err)
+		return "", fmt.Errorf("failed to import commit history: %w", err)
 	}
 
 	// Import tags if requested
@@ -122,7 +123,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 	}
 
 	fmt.Printf("Successfully cloned %s/%s with %d commits\n", owner, repo, len(commits))
-	return nil
+	return project.DefaultBranch, nil
 }
 
 // cloneSnapshot downloads only the latest snapshot without history (backward compatibility)
