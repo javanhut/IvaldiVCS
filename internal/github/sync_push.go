@@ -41,6 +41,7 @@ type fileHashResult struct {
 
 // computeFileDeltas compares two commits and returns changed files using parallel hash computation
 func (rs *RepoSyncer) computeFileDeltas(parentHash, currentHash cas.Hash) ([]FileChange, error) {
+	fmt.Printf("Computing file changes...\n")
 	commitReader := commit.NewCommitReader(rs.casStore)
 
 	// Determine worker count
@@ -475,6 +476,19 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 		isNewBranch = false
 	}
 
+	// Check if this exact commit was already pushed to this branch
+	if parentSHA != "" && !isNewBranch && !force {
+		refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+		if err == nil {
+			timeline, err := refsManager.GetTimeline(branch, refs.LocalTimeline)
+			refsManager.Close()
+			if err == nil && timeline.GitSHA1Hash == parentSHA {
+				fmt.Printf("Already up to date - no new commits to push\n")
+				return nil
+			}
+		}
+	}
+
 	// Get parent tree SHA from GitHub for delta optimization
 	if parentSHA != "" && !isNewBranch {
 		// Fetch the parent commit to get its tree SHA
@@ -664,6 +678,12 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	treeResp, err := rs.client.CreateTree(ctx, owner, repo, treeReq)
 	if err != nil {
 		return fmt.Errorf("failed to create tree: %w", err)
+	}
+
+	// Skip if the resulting tree is identical to what's already on GitHub
+	if parentTreeSHA != "" && treeResp.SHA == parentTreeSHA {
+		fmt.Printf("Already up to date - no file changes to push\n")
+		return nil
 	}
 
 	// Create commit on GitHub

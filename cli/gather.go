@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"os"
@@ -11,89 +10,9 @@ import (
 	"sync"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/spf13/cobra"
 )
-
-// PatternCache holds pre-compiled ignore patterns for fast matching
-type PatternCache struct {
-	patterns       []string
-	dirPatterns    []string // Patterns ending with /
-	globPatterns   []string // Patterns with wildcards
-	literalMatches map[string]bool
-}
-
-// NewPatternCache creates a pattern cache from a list of patterns
-func NewPatternCache(patterns []string) *PatternCache {
-	cache := &PatternCache{
-		patterns:       patterns,
-		literalMatches: make(map[string]bool),
-	}
-
-	for _, pattern := range patterns {
-		if strings.HasSuffix(pattern, "/") {
-			cache.dirPatterns = append(cache.dirPatterns, strings.TrimSuffix(pattern, "/"))
-		} else if strings.ContainsAny(pattern, "*?[") {
-			cache.globPatterns = append(cache.globPatterns, pattern)
-		} else {
-			cache.literalMatches[pattern] = true
-		}
-	}
-
-	return cache
-}
-
-// IsIgnored checks if a path matches any cached pattern
-func (pc *PatternCache) IsIgnored(path string) bool {
-	if path == ".ivaldiignore" || filepath.Base(path) == ".ivaldiignore" {
-		return false
-	}
-
-	baseName := filepath.Base(path)
-
-	// Fast literal match check
-	if pc.literalMatches[path] || pc.literalMatches[baseName] {
-		return true
-	}
-
-	// Check directory patterns
-	for _, dirPattern := range pc.dirPatterns {
-		if strings.HasPrefix(path, dirPattern+"/") || path == dirPattern {
-			return true
-		}
-	}
-
-	// Check glob patterns
-	for _, pattern := range pc.globPatterns {
-		// Try matching the full path
-		if matched, _ := filepath.Match(pattern, path); matched {
-			return true
-		}
-		// Try matching just the basename
-		if matched, _ := filepath.Match(pattern, baseName); matched {
-			return true
-		}
-		// Handle ** patterns
-		if strings.Contains(pattern, "**") {
-			parts := strings.Split(pattern, "**")
-			if len(parts) == 2 {
-				prefix := strings.TrimPrefix(parts[0], "/")
-				suffix := strings.TrimPrefix(parts[1], "/")
-
-				if prefix != "" && !strings.HasPrefix(path, prefix) {
-					continue
-				}
-
-				if suffix != "" {
-					if matched, _ := filepath.Match(suffix, baseName); matched {
-						return true
-					}
-				}
-			}
-		}
-	}
-
-	return false
-}
 
 // fileResult holds a file path discovered during parallel walking
 type fileResult struct {
@@ -110,7 +29,7 @@ type dirJob struct {
 type parallelWalker struct {
 	workDir       string
 	allowAll      bool
-	patternCache  *PatternCache
+	patternCache  *ignore.PatternCache
 	results       chan fileResult
 	jobs          chan dirJob
 	wg            sync.WaitGroup
@@ -120,7 +39,7 @@ type parallelWalker struct {
 }
 
 // newParallelWalker creates a new parallel walker
-func newParallelWalker(workDir string, allowAll bool, patternCache *PatternCache) *parallelWalker {
+func newParallelWalker(workDir string, allowAll bool, patternCache *ignore.PatternCache) *parallelWalker {
 	workerCount := runtime.NumCPU()
 	if workerCount < 4 {
 		workerCount = 4
@@ -293,9 +212,10 @@ var autoExcludePatterns = []string{
 }
 
 var gatherCmd = &cobra.Command{
-	Use:   "gather [files...]",
-	Short: "Stage files for the next seal/commit",
-	Long:  `Gathers (stages) specified files or all modified files that will be included in the next seal operation`,
+	Use:     "gather [files...]",
+	Aliases: []string{"add", "select"},
+	Short:   "Stage files for the next seal/commit",
+	Long:    `Gathers (stages) specified files or all modified files that will be included in the next seal operation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check if we're in an Ivaldi repository
 		ivaldiDir := ".ivaldi"
@@ -315,11 +235,10 @@ var gatherCmd = &cobra.Command{
 		}
 
 		// Load ignore patterns from .ivaldiignore and create pattern cache
-		ignorePatterns, err := loadIgnorePatternsForGather(workDir)
+		patternCache, err := ignore.LoadPatternCache(workDir)
 		if err != nil {
 			log.Printf("Warning: Failed to load ignore patterns: %v", err)
 		}
-		patternCache := NewPatternCache(ignorePatterns)
 
 		// Create staging area directory
 		stageDir := filepath.Join(ivaldiDir, "stage")
@@ -580,86 +499,3 @@ func shouldGatherDotFile(path string) bool {
 	return false
 }
 
-// loadIgnorePatternsForGather loads patterns from .ivaldiignore file
-func loadIgnorePatternsForGather(workDir string) ([]string, error) {
-	ignoreFile := filepath.Join(workDir, ".ivaldiignore")
-	if _, err := os.Stat(ignoreFile); os.IsNotExist(err) {
-		return []string{}, nil // No ignore file
-	}
-
-	file, err := os.Open(ignoreFile)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var patterns []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		// Skip empty lines and comments
-		if line != "" && !strings.HasPrefix(line, "#") {
-			patterns = append(patterns, line)
-		}
-	}
-
-	return patterns, scanner.Err()
-}
-
-// isFileIgnored checks if a file path matches any ignore patterns
-// IMPORTANT: .ivaldiignore itself is NEVER ignored
-func isFileIgnored(path string, patterns []string) bool {
-	// Never ignore .ivaldiignore itself
-	if path == ".ivaldiignore" || filepath.Base(path) == ".ivaldiignore" {
-		return false
-	}
-
-	for _, pattern := range patterns {
-		// Handle directory patterns (patterns ending with /)
-		if strings.HasSuffix(pattern, "/") {
-			dirPattern := strings.TrimSuffix(pattern, "/")
-			// Check if the path is within this directory
-			if strings.HasPrefix(path, dirPattern+"/") || path == dirPattern {
-				return true
-			}
-		}
-
-		// Try matching the full path
-		if matched, _ := filepath.Match(pattern, path); matched {
-			return true
-		}
-
-		// Try matching just the basename
-		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
-			return true
-		}
-
-		// Handle patterns with directory separators
-		if strings.Contains(pattern, "/") {
-			if matched, _ := filepath.Match(pattern, path); matched {
-				return true
-			}
-		}
-
-		// Handle wildcards in directory paths (e.g., **/*.log)
-		if strings.Contains(pattern, "**") {
-			// Convert ** pattern to a simpler check
-			parts := strings.Split(pattern, "**")
-			if len(parts) == 2 {
-				prefix := strings.TrimPrefix(parts[0], "/")
-				suffix := strings.TrimPrefix(parts[1], "/")
-
-				if prefix != "" && !strings.HasPrefix(path, prefix) {
-					continue
-				}
-
-				if suffix != "" {
-					if matched, _ := filepath.Match(suffix, filepath.Base(path)); matched {
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
-}

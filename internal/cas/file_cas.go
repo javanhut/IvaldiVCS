@@ -102,13 +102,7 @@ func (f *FileCAS) Get(hash Hash) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
-	
-	// Verify the hash matches
-	computed := SumB3(data)
-	if computed != hash {
-		return nil, fmt.Errorf("corrupted data: hash mismatch for %s", hash.String())
-	}
-	
+
 	return data, nil
 }
 

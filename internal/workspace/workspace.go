@@ -14,6 +14,7 @@
 package workspace
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
@@ -27,6 +28,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/diffmerge"
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
 	"github.com/javanhut/Ivaldi-vcs/internal/hamtdir"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/logging"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/shelf"
@@ -42,32 +44,91 @@ type WorkspaceState struct {
 	WorkDir      string           // Path to working directory
 }
 
+// StatCacheEntry holds cached stat+hash data for a single file.
+type StatCacheEntry struct {
+	ModTime  int64            `json:"mod_time"`
+	Size     int64            `json:"size"`
+	Checksum cas.Hash         `json:"checksum"`
+	FileRef  filechunk.NodeRef `json:"file_ref"`
+	Mode     uint32           `json:"mode"`
+}
+
+// StatCache maps relative paths to cached file metadata.
+type StatCache struct {
+	Entries map[string]StatCacheEntry `json:"entries"`
+}
+
 // Materializer handles workspace materialization operations.
 type Materializer struct {
-	CAS       cas.CAS
-	IvaldiDir string
-	WorkDir   string
+	CAS         cas.CAS
+	IvaldiDir   string
+	WorkDir     string
+	IgnoreCache *ignore.PatternCache
+	statCache   *StatCache
+}
+
+// SetIgnorePatterns sets the ignore-pattern cache used by ScanWorkspace.
+func (m *Materializer) SetIgnorePatterns(pc *ignore.PatternCache) {
+	m.IgnoreCache = pc
 }
 
 // NewMaterializer creates a new Materializer.
 func NewMaterializer(casStore cas.CAS, ivaldiDir, workDir string) *Materializer {
-	return &Materializer{
+	m := &Materializer{
 		CAS:       casStore,
 		IvaldiDir: ivaldiDir,
 		WorkDir:   workDir,
 	}
+	m.loadStatCache()
+	return m
+}
+
+// loadStatCache loads the stat cache from disk.
+func (m *Materializer) loadStatCache() {
+	cachePath := filepath.Join(m.IvaldiDir, "stat-cache.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		m.statCache = &StatCache{Entries: make(map[string]StatCacheEntry)}
+		return
+	}
+	var cache StatCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		m.statCache = &StatCache{Entries: make(map[string]StatCacheEntry)}
+		return
+	}
+	if cache.Entries == nil {
+		cache.Entries = make(map[string]StatCacheEntry)
+	}
+	m.statCache = &cache
+}
+
+// saveStatCache writes the stat cache to disk.
+func (m *Materializer) saveStatCache() {
+	cachePath := filepath.Join(m.IvaldiDir, "stat-cache.json")
+	data, err := json.Marshal(m.statCache)
+	if err != nil {
+		return
+	}
+	os.WriteFile(cachePath, data, 0644)
 }
 
 // GetCurrentState reads the current workspace state.
-func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
-	// Get current timeline
-	refsManager, err := refs.NewRefsManager(m.IvaldiDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create refs manager: %w", err)
+// If refsManager is non-nil, it is reused; otherwise a new one is created internally.
+func (m *Materializer) GetCurrentState(refsManager ...*refs.RefsManager) (*WorkspaceState, error) {
+	// Use provided RefsManager or create a new one
+	var rm *refs.RefsManager
+	if len(refsManager) > 0 && refsManager[0] != nil {
+		rm = refsManager[0]
+	} else {
+		var err error
+		rm, err = refs.NewRefsManager(m.IvaldiDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create refs manager: %w", err)
+		}
+		defer rm.Close()
 	}
-	defer refsManager.Close()
 
-	timelineName, err := refsManager.GetCurrentTimeline()
+	timelineName, err := rm.GetCurrentTimeline()
 	if err != nil {
 		// If there's no current timeline (no HEAD file), scan the current workspace
 		// and create an index based on what's currently in the working directory
@@ -100,38 +161,84 @@ func (m *Materializer) GetCurrentState() (*WorkspaceState, error) {
 }
 
 // ScanWorkspace scans the current working directory and creates a workspace index.
+// It respects ignore patterns set via SetIgnorePatterns and handles transient files
+// (files that disappear between discovery and read) gracefully.
 func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
+	fmt.Fprintf(os.Stderr, "Scanning workspace...\n")
 	var files []wsindex.FileMetadata
 
 	err := filepath.WalkDir(m.WorkDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// Handle transient directories/files that disappear during walk
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during scan, skipping", "path", path)
+				return nil
+			}
 			return err
 		}
 
-		// Skip directories
-		if d.IsDir() {
-			return nil
-		}
-
-		// Skip .ivaldi directory
 		relPath, err := filepath.Rel(m.WorkDir, path)
 		if err != nil {
 			return err
 		}
 
+		// Skip .ivaldi directory entirely
+		if d.IsDir() {
+			if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+				return filepath.SkipDir
+			}
+
+			// Skip directories matching ignore patterns
+			if m.IgnoreCache != nil && m.IgnoreCache.IsDirIgnored(relPath) {
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+
+		// Skip .ivaldi files (in case we get here without SkipDir)
 		if strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) || relPath == ".ivaldi" {
+			return nil
+		}
+
+		// Skip files matching ignore patterns
+		if m.IgnoreCache != nil && m.IgnoreCache.IsIgnored(relPath) {
 			return nil
 		}
 
 		// Get file info
 		info, err := d.Info()
 		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during scan, skipping", "path", relPath)
+				return nil
+			}
 			return err
+		}
+
+		// Check stat cache: if mtime+size match, reuse cached entry
+		if cached, ok := m.statCache.Entries[relPath]; ok {
+			if cached.ModTime == info.ModTime().UnixNano() && cached.Size == info.Size() {
+				fileMetadata := wsindex.FileMetadata{
+					Path:     relPath,
+					FileRef:  cached.FileRef,
+					ModTime:  info.ModTime(),
+					Mode:     cached.Mode,
+					Size:     cached.Size,
+					Checksum: cached.Checksum,
+				}
+				files = append(files, fileMetadata)
+				return nil
+			}
 		}
 
 		// Read file content
 		content, err := os.ReadFile(path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during read, skipping", "path", relPath)
+				return nil
+			}
 			return fmt.Errorf("failed to read file %s: %w", relPath, err)
 		}
 
@@ -142,6 +249,8 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 			return fmt.Errorf("failed to create file chunks for %s: %w", relPath, err)
 		}
 
+		checksum := cas.SumB3(content)
+
 		// Create metadata
 		fileMetadata := wsindex.FileMetadata{
 			Path:     relPath,
@@ -149,7 +258,16 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 			ModTime:  info.ModTime(),
 			Mode:     uint32(info.Mode()),
 			Size:     info.Size(),
-			Checksum: cas.SumB3(content),
+			Checksum: checksum,
+		}
+
+		// Update stat cache
+		m.statCache.Entries[relPath] = StatCacheEntry{
+			ModTime:  info.ModTime().UnixNano(),
+			Size:     info.Size(),
+			Checksum: checksum,
+			FileRef:  fileRef,
+			Mode:     uint32(info.Mode()),
 		}
 
 		files = append(files, fileMetadata)
@@ -160,7 +278,66 @@ func (m *Materializer) ScanWorkspace() (wsindex.IndexRef, error) {
 		return wsindex.IndexRef{}, fmt.Errorf("failed to scan workspace: %w", err)
 	}
 
+	// Save updated stat cache
+	m.saveStatCache()
+
+	fmt.Fprintf(os.Stderr, "Scanned %d files\n", len(files))
+
 	// Build workspace index
+	wsBuilder := wsindex.NewBuilder(m.CAS)
+	return wsBuilder.Build(files)
+}
+
+// ScanSpecificFiles scans only the specified relative paths and creates a workspace index.
+// Files that do not exist or disappear during read are skipped with a warning.
+// This is O(len(relativePaths)) instead of O(all workspace files).
+func (m *Materializer) ScanSpecificFiles(relativePaths []string) (wsindex.IndexRef, error) {
+	var files []wsindex.FileMetadata
+
+	for _, relPath := range relativePaths {
+		fullPath := filepath.Join(m.WorkDir, relPath)
+
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("Staged file not found, skipping", "path", relPath)
+				continue
+			}
+			return wsindex.IndexRef{}, fmt.Errorf("failed to stat file %s: %w", relPath, err)
+		}
+
+		if info.IsDir() {
+			logging.Warn("Skipping directory in staged files", "path", relPath)
+			continue
+		}
+
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				logging.Warn("File disappeared during read, skipping", "path", relPath)
+				continue
+			}
+			return wsindex.IndexRef{}, fmt.Errorf("failed to read file %s: %w", relPath, err)
+		}
+
+		builder := filechunk.NewBuilder(m.CAS, filechunk.DefaultParams())
+		fileRef, err := builder.Build(content)
+		if err != nil {
+			return wsindex.IndexRef{}, fmt.Errorf("failed to create file chunks for %s: %w", relPath, err)
+		}
+
+		fileMetadata := wsindex.FileMetadata{
+			Path:     relPath,
+			FileRef:  fileRef,
+			ModTime:  info.ModTime(),
+			Mode:     uint32(info.Mode()),
+			Size:     info.Size(),
+			Checksum: cas.SumB3(content),
+		}
+
+		files = append(files, fileMetadata)
+	}
+
 	wsBuilder := wsindex.NewBuilder(m.CAS)
 	return wsBuilder.Build(files)
 }
@@ -203,6 +380,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 
 	// Auto-shelf current changes before switching (if enabled and switching between different timelines)
 	if enableAutoShelf && currentTimelineName != "" && currentTimelineName != timelineName {
+		fmt.Printf("Shelving current workspace...\n")
 		shelfManager := shelf.NewShelfManager(m.CAS, m.IvaldiDir)
 
 		// Always remove any existing auto-shelf for the current timeline first
@@ -278,6 +456,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	}
 
 	// Compute differences between current state and target
+	fmt.Printf("Computing workspace changes...\n")
 	differ := diffmerge.NewDiffer(m.CAS)
 	diff, err := differ.DiffWorkspaces(currentState.Index, targetIndex)
 	if err != nil {
@@ -285,6 +464,7 @@ func (m *Materializer) MaterializeTimelineWithAutoShelf(timelineName string, ena
 	}
 
 	// Apply changes to working directory
+	fmt.Printf("Applying %d changes...\n", len(diff.FileChanges))
 	err = m.ApplyChangesToWorkspace(diff)
 	if err != nil {
 		return fmt.Errorf("failed to apply changes to workspace: %w", err)
@@ -334,6 +514,7 @@ func (m *Materializer) CreateTargetIndex(timeline refs.Timeline) (wsindex.IndexR
 	}
 
 	// Create file metadata for each file
+	fmt.Fprintf(os.Stderr, "Reading %d files from seal...\n", len(filePaths))
 	var files []wsindex.FileMetadata
 	for _, filePath := range filePaths {
 		// Get file content to determine size and checksum

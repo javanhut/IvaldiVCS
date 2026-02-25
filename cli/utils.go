@@ -10,6 +10,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/config"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/objects"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/seals"
@@ -80,6 +81,8 @@ func createInitialCommit(ivaldiDir, workDir string) (*[32]byte, error) {
 
 	// Create materializer to scan workspace
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+	ignoreCache, _ := ignore.LoadPatternCache(workDir)
+	materializer.SetIgnorePatterns(ignoreCache)
 
 	// Scan the current workspace
 	wsIndex, err := materializer.ScanWorkspace()

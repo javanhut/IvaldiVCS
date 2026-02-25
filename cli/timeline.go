@@ -10,6 +10,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
 	"github.com/javanhut/Ivaldi-vcs/internal/history"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/javanhut/Ivaldi-vcs/internal/seals"
 	"github.com/javanhut/Ivaldi-vcs/internal/shelf"
@@ -68,6 +69,8 @@ var createTimelineCmd = &cobra.Command{
 			// This ensures files like tl1.txt stay with tl1 when we create tl2
 			shelfManager := shelf.NewShelfManager(casStore, ivaldiDir)
 			materializer := workspace.NewMaterializer(casStore, ivaldiDir, ".")
+			ignoreCache, _ := ignore.LoadPatternCache(".")
+			materializer.SetIgnorePatterns(ignoreCache)
 			currentWorkspaceIndex, err := materializer.ScanWorkspace()
 			if err == nil {
 				// Get the current timeline's base (committed) state
@@ -100,7 +103,7 @@ var createTimelineCmd = &cobra.Command{
 
 			// THEN: Capture the workspace state for the NEW timeline
 			log.Printf("Capturing current workspace state for new timeline")
-			err = createCommitFromWorkspace(casStore, ivaldiDir, currentTimeline, &baseHashes)
+			err = createCommitFromWorkspace(casStore, ivaldiDir, currentTimeline, &baseHashes, &currentWorkspaceIndex)
 			if err != nil {
 				log.Printf("Warning: Could not create workspace snapshot: %v", err)
 
@@ -297,6 +300,8 @@ var switchTimelineCmd = &cobra.Command{
 		}
 
 		materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
+		ignoreCache, _ := ignore.LoadPatternCache(workDir)
+		materializer.SetIgnorePatterns(ignoreCache)
 
 		// Materialize the target timeline with auto-shelving enabled
 		// This will automatically stash uncommitted changes and restore any existing shelf
@@ -363,9 +368,62 @@ var removeTimelineCmd = &cobra.Command{
 	},
 }
 
+var renameTimelineCmd = &cobra.Command{
+	Use:     "rename <old-name> <new-name>",
+	Aliases: []string{"rn", "mv"},
+	Short:   "Rename a timeline",
+	Long: `Renames a local timeline. If the renamed timeline is the current one, HEAD is updated automatically.
+Any corresponding remote tracking reference is also renamed.
+
+When you upload after renaming, the new name will be used as the remote branch name.
+
+Example:
+  ivaldi timeline rename master main
+  ivaldi upload                          # pushes to 'main' on remote`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		oldName := args[0]
+		newName := args[1]
+
+		// Check if we're in an Ivaldi repository
+		ivaldiDir := ".ivaldi"
+		if _, err := os.Stat(ivaldiDir); os.IsNotExist(err) {
+			return fmt.Errorf("not in an Ivaldi repository (no .ivaldi directory found)")
+		}
+
+		// Initialize refs manager
+		refsManager, err := refs.NewRefsManager(ivaldiDir)
+		if err != nil {
+			return fmt.Errorf("failed to initialize refs manager: %w", err)
+		}
+		defer refsManager.Close()
+
+		// Check --force flag
+		force, _ := cmd.Flags().GetBool("force")
+
+		// Perform the rename
+		if err := refsManager.RenameTimeline(oldName, newName, refs.LocalTimeline, force); err != nil {
+			return fmt.Errorf("failed to rename timeline: %w", err)
+		}
+
+		fmt.Printf("Renamed timeline '%s' -> '%s'\n", oldName, newName)
+
+		// Check if HEAD was updated
+		currentTimeline, err := refsManager.GetCurrentTimeline()
+		if err == nil && currentTimeline == newName {
+			fmt.Printf("HEAD updated to '%s'\n", newName)
+		}
+
+		fmt.Printf("Next upload will push to '%s' on remote\n", newName)
+
+		return nil
+	},
+}
+
 // createCommitFromWorkspace creates a commit object from the current workspace state
 // and stores the commit hash in the provided baseHashes array.
-func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimeline string, baseHashes *[2][32]byte) error {
+// If preScannedIndex is non-nil, it is used instead of rescanning the workspace.
+func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimeline string, baseHashes *[2][32]byte, preScannedIndex *wsindex.IndexRef) error {
 	// Get the parent timeline's commit if it exists
 	refsManager, err := refs.NewRefsManager(ivaldiDir)
 	if err != nil {
@@ -384,12 +442,18 @@ func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimelin
 		}
 	}
 
-	// Scan current workspace to capture ALL files (both tracked and untracked)
-	// This becomes the initial state of the new timeline
-	materializer := workspace.NewMaterializer(casStore, ivaldiDir, ".")
-	wsIndex, err := materializer.ScanWorkspace()
-	if err != nil {
-		return fmt.Errorf("failed to scan workspace: %w", err)
+	// Use pre-scanned index if available, otherwise scan workspace
+	var wsIndex wsindex.IndexRef
+	if preScannedIndex != nil {
+		wsIndex = *preScannedIndex
+	} else {
+		materializer := workspace.NewMaterializer(casStore, ivaldiDir, ".")
+		ignoreCache, _ := ignore.LoadPatternCache(".")
+		materializer.SetIgnorePatterns(ignoreCache)
+		wsIndex, err = materializer.ScanWorkspace()
+		if err != nil {
+			return fmt.Errorf("failed to scan workspace: %w", err)
+		}
 	}
 
 	wsLoader := wsindex.NewLoader(casStore)
@@ -445,4 +509,8 @@ func createCommitFromWorkspace(casStore cas.CAS, ivaldiDir string, parentTimelin
 	}
 
 	return nil
+}
+
+func init() {
+	renameTimelineCmd.Flags().BoolP("force", "f", false, "Overwrite destination timeline if it already exists")
 }

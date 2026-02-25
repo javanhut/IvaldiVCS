@@ -34,9 +34,11 @@ type Timeline struct {
 
 // RefsManager handles timeline and reference management
 type RefsManager struct {
-	ivaldiDir string
-	refsDir   string
-	db        *store.SharedDB
+	ivaldiDir      string
+	refsDir        string
+	db             *store.SharedDB
+	sealIndex      map[[32]byte]string
+	sealIndexBuilt bool
 }
 
 // NewRefsManager creates a new refs manager
@@ -349,6 +351,75 @@ func (rm *RefsManager) TimelineExists(name string, timelineType TimelineType) bo
 	return err == nil
 }
 
+// RenameTimeline renames a timeline from oldName to newName.
+// It renames the ref file, updates HEAD if this is the current timeline,
+// and renames the corresponding remote tracking ref if one exists.
+// If force is true, an existing destination timeline will be removed first,
+// unless it is the current HEAD timeline.
+func (rm *RefsManager) RenameTimeline(oldName, newName string, timelineType TimelineType, force bool) error {
+	// Verify old timeline exists
+	if !rm.TimelineExists(oldName, timelineType) {
+		return fmt.Errorf("timeline '%s' does not exist", oldName)
+	}
+
+	// Check if new name already exists
+	if rm.TimelineExists(newName, timelineType) {
+		if !force {
+			return fmt.Errorf("timeline '%s' already exists", newName)
+		}
+
+		// Safety: refuse to overwrite the current HEAD timeline
+		if timelineType == LocalTimeline {
+			currentTimeline, err := rm.GetCurrentTimeline()
+			if err == nil && currentTimeline == newName {
+				return fmt.Errorf("cannot force-overwrite '%s': it is the current HEAD timeline", newName)
+			}
+		}
+
+		// Remove the existing destination ref file
+		destPath := rm.getRefPath(newName, timelineType)
+		if err := os.Remove(destPath); err != nil {
+			return fmt.Errorf("failed to remove existing timeline '%s': %w", newName, err)
+		}
+	}
+
+	// Rename the ref file
+	oldPath := rm.getRefPath(oldName, timelineType)
+	newPath := rm.getRefPath(newName, timelineType)
+
+	// Ensure parent directory exists for new path
+	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+		return fmt.Errorf("create ref parent dir: %w", err)
+	}
+
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("rename timeline ref: %w", err)
+	}
+
+	// Update HEAD if this was the current timeline
+	if timelineType == LocalTimeline {
+		currentTimeline, err := rm.GetCurrentTimeline()
+		if err == nil && currentTimeline == oldName {
+			if err := rm.SetCurrentTimeline(newName); err != nil {
+				// Try to roll back the rename
+				os.Rename(newPath, oldPath)
+				return fmt.Errorf("update HEAD: %w", err)
+			}
+		}
+
+		// Rename remote tracking ref if it exists
+		if rm.TimelineExists(oldName, RemoteTimeline) {
+			oldRemotePath := rm.getRefPath(oldName, RemoteTimeline)
+			newRemotePath := rm.getRefPath(newName, RemoteTimeline)
+			if err := os.MkdirAll(filepath.Dir(newRemotePath), 0755); err == nil {
+				os.Rename(oldRemotePath, newRemotePath) // Best-effort
+			}
+		}
+	}
+
+	return nil
+}
+
 // GetTimelineSyncStatus compares local and remote timelines
 type TimelineSyncStatus struct {
 	Name          string
@@ -584,7 +655,16 @@ func (rm *RefsManager) StoreSealName(sealName string, hash [32]byte, message str
 	// Format: hash_hex timestamp message
 	content := fmt.Sprintf("%s %d %s\n", hashHex, timestamp, message)
 
-	return os.WriteFile(sealPath, []byte(content), 0644)
+	if err := os.WriteFile(sealPath, []byte(content), 0644); err != nil {
+		return err
+	}
+
+	// Update in-memory index if already built
+	if rm.sealIndexBuilt {
+		rm.sealIndex[hash] = sealName
+	}
+
+	return nil
 }
 
 // GetSealByName retrieves seal information by name
@@ -622,47 +702,52 @@ func (rm *RefsManager) GetSealByName(sealName string) (hash [32]byte, timestamp 
 	return hash, timestamp, message, nil
 }
 
-// GetSealNameByHash retrieves seal name by hash (reverse lookup)
-func (rm *RefsManager) GetSealNameByHash(hash [32]byte) (string, error) {
+// buildSealIndex reads all seal files once and builds a hash→name map.
+func (rm *RefsManager) buildSealIndex() {
+	rm.sealIndex = make(map[[32]byte]string)
+	rm.sealIndexBuilt = true
+
 	sealsDir := filepath.Join(rm.refsDir, "seals")
 	if _, err := os.Stat(sealsDir); os.IsNotExist(err) {
-		return "", fmt.Errorf("no seals directory")
+		return
 	}
 
-	hashHex := hex.EncodeToString(hash[:])
-
-	// Walk through all seal files to find matching hash
-	var foundSealName string
-	err := filepath.Walk(sealsDir, func(path string, info os.FileInfo, err error) error {
+	filepath.Walk(sealsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil // Skip files we can't read
+			return nil
 		}
 
 		content := strings.TrimSpace(string(data))
 		parts := strings.SplitN(content, " ", 2)
 		if len(parts) < 1 {
-			return nil // Skip malformed files
+			return nil
 		}
 
-		if parts[0] == hashHex {
-			foundSealName = filepath.Base(path)
-			return fmt.Errorf("found") // Use error to break out of walk
+		hashBytes, err := hex.DecodeString(parts[0])
+		if err != nil || len(hashBytes) != 32 {
+			return nil
 		}
 
+		var h [32]byte
+		copy(h[:], hashBytes)
+		rm.sealIndex[h] = filepath.Base(path)
 		return nil
 	})
+}
 
-	if foundSealName != "" {
-		return foundSealName, nil
+// GetSealNameByHash retrieves seal name by hash (reverse lookup) using a lazy-init index.
+func (rm *RefsManager) GetSealNameByHash(hash [32]byte) (string, error) {
+	if !rm.sealIndexBuilt {
+		rm.buildSealIndex()
 	}
 
-	if err != nil && err.Error() == "found" {
-		return foundSealName, nil
+	if name, ok := rm.sealIndex[hash]; ok {
+		return name, nil
 	}
 
 	return "", fmt.Errorf("seal name not found for hash")

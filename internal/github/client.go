@@ -414,7 +414,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	// Set headers
 	req.Header.Set("Accept", AcceptHeader)
-	req.Header.Set("Authorization", fmt.Sprintf("%s %s", c.authHeaderType(), c.token))
+	if c.token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("%s %s", c.authHeaderType(), c.token))
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -600,7 +602,9 @@ func (c *Client) DownloadFile(ctx context.Context, owner, repo, path, ref string
 
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err == nil {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+		if c.token != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+		}
 
 		resp, err := c.httpClient.Do(req)
 		if err == nil && resp.StatusCode == 200 {
@@ -633,7 +637,9 @@ func (c *Client) DownloadFile(ctx context.Context, owner, repo, path, ref string
 	if content.DownloadURL != "" {
 		req, err := http.NewRequestWithContext(ctx, "GET", content.DownloadURL, nil)
 		if err == nil {
-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+			if c.token != "" {
+				req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+			}
 
 			resp, err := c.httpClient.Do(req)
 			if err == nil {

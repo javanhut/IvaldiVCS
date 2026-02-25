@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/colors"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/objects"
 	"github.com/javanhut/Ivaldi-vcs/internal/refs"
 	"github.com/spf13/cobra"
@@ -68,13 +68,19 @@ var statusCmd = &cobra.Command{
 		}
 
 		// Load ignore patterns
-		ignorePatterns, err := loadIgnorePatterns(workDir)
+		patternCache, err := ignore.LoadPatternCache(workDir)
 		if err != nil {
 			log.Printf("Warning: Failed to load ignore patterns: %v", err)
 		}
 
+		// Get known files once (reuse for both status and seal info)
+		knownFiles, err := getKnownFiles(ivaldiDir, refsManager)
+		if err != nil {
+			log.Printf("Warning: Failed to get known files: %v", err)
+		}
+
 		// Get file statuses
-		fileStatuses, err := getFileStatuses(workDir, ivaldiDir, ignorePatterns)
+		fileStatuses, err := getFileStatuses(workDir, ivaldiDir, patternCache, knownFiles)
 		if err != nil {
 			return fmt.Errorf("failed to get file statuses: %w", err)
 		}
@@ -83,7 +89,7 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("On timeline %s\n", colors.Bold(currentTimeline))
 
 		// Show information about the last seal if available
-		err = displayLastSealInfo(refsManager, currentTimeline, ivaldiDir)
+		err = displayLastSealInfo(refsManager, currentTimeline, knownFiles)
 		if err != nil {
 			// Don't fail if we can't get seal info
 		}
@@ -194,7 +200,7 @@ func init() {
 }
 
 // getFileStatuses analyzes the working directory and returns file status information
-func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]FileStatusInfo, error) {
+func getFileStatuses(workDir, ivaldiDir string, patternCache *ignore.PatternCache, knownFiles map[string][32]byte) ([]FileStatusInfo, error) {
 	var fileStatuses []FileStatusInfo
 
 	// Get staged files
@@ -203,21 +209,19 @@ func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]File
 		log.Printf("Warning: Failed to get staged files: %v", err)
 	}
 
-	// Get known files from last snapshot (if any)
-	knownFiles, err := getKnownFiles(ivaldiDir)
-	if err != nil {
-		log.Printf("Warning: Failed to get known files: %v", err)
+	// Build staged map for O(1) lookups
+	stagedMap := make(map[string]bool, len(stagedFiles))
+	for _, f := range stagedFiles {
+		stagedMap[f] = true
 	}
 
 	// Walk the working directory
 	err = filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
-		}
-
-		// Skip directories
-		if info.IsDir() {
-			return nil
 		}
 
 		// Get relative path
@@ -226,13 +230,24 @@ func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]File
 			return err
 		}
 
-		// Skip .ivaldi directory
+		// Handle directories: skip .ivaldi and ignored dirs entirely
+		if info.IsDir() {
+			if relPath == ".ivaldi" || strings.HasPrefix(relPath, ".ivaldi"+string(filepath.Separator)) {
+				return filepath.SkipDir
+			}
+			if patternCache != nil && patternCache.IsDirIgnored(relPath) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip .ivaldi files (safety fallback)
 		if strings.HasPrefix(relPath, ".ivaldi") {
 			return nil
 		}
 
 		// Check if file is ignored
-		if isIgnored(relPath, ignorePatterns) {
+		if patternCache != nil && patternCache.IsIgnored(relPath) {
 			fileStatuses = append(fileStatuses, FileStatusInfo{
 				Path:   relPath,
 				Status: StatusIgnored,
@@ -240,25 +255,11 @@ func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]File
 			return nil
 		}
 
-		// Check if file is staged
-		isStaged := false
-		for _, stagedFile := range stagedFiles {
-			if stagedFile == relPath {
-				isStaged = true
-				break
-			}
-		}
+		// O(1) staged check
+		isStaged := stagedMap[relPath]
 
-		// Check if file was known in previous snapshot
-		wasKnown := false
-		var knownHash [32]byte
-		for filePath, hash := range knownFiles {
-			if filePath == relPath {
-				wasKnown = true
-				knownHash = hash
-				break
-			}
-		}
+		// O(1) known file check
+		knownHash, wasKnown := knownFiles[relPath]
 
 		if isStaged {
 			// File is staged - determine if it's new or modified
@@ -310,14 +311,8 @@ func getFileStatuses(workDir, ivaldiDir string, ignorePatterns []string) ([]File
 	for filePath := range knownFiles {
 		fullPath := filepath.Join(workDir, filePath)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			// File was deleted
-			isStaged := false
-			for _, stagedFile := range stagedFiles {
-				if stagedFile == filePath {
-					isStaged = true
-					break
-				}
-			}
+			// O(1) staged check
+			isStaged := stagedMap[filePath]
 
 			if isStaged {
 				// Deletion is staged
@@ -362,48 +357,29 @@ func getStagedFiles(ivaldiDir string) ([]string, error) {
 	return files, nil
 }
 
-// loadIgnorePatterns loads patterns from .ivaldiignore file
-func loadIgnorePatterns(workDir string) ([]string, error) {
-	ignoreFile := filepath.Join(workDir, ".ivaldiignore")
-	if _, err := os.Stat(ignoreFile); os.IsNotExist(err) {
-		return []string{}, nil // No ignore file
-	}
 
-	file, err := os.Open(ignoreFile)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var patterns []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" && !strings.HasPrefix(line, "#") {
-			patterns = append(patterns, line)
-		}
-	}
-
-	return patterns, scanner.Err()
-}
-
-// getKnownFiles reads files from the last commit/seal for proper status tracking
-func getKnownFiles(ivaldiDir string) (map[string][32]byte, error) {
+// getKnownFiles reads files from the last commit/seal for proper status tracking.
+// If refsManager is non-nil, it is reused; otherwise a new one is created internally.
+func getKnownFiles(ivaldiDir string, refsManager *refs.RefsManager) (map[string][32]byte, error) {
 	knownFiles := make(map[string][32]byte)
 
-	// Get the current timeline and its last commit
-	refsManager, err := refs.NewRefsManager(ivaldiDir)
-	if err != nil {
-		return knownFiles, nil // No refs system, treat as empty
+	// Use provided RefsManager or create a new one
+	rm := refsManager
+	if rm == nil {
+		var err error
+		rm, err = refs.NewRefsManager(ivaldiDir)
+		if err != nil {
+			return knownFiles, nil // No refs system, treat as empty
+		}
+		defer rm.Close()
 	}
-	defer refsManager.Close()
 
-	currentTimeline, err := refsManager.GetCurrentTimeline()
+	currentTimeline, err := rm.GetCurrentTimeline()
 	if err != nil {
 		return knownFiles, nil // No current timeline
 	}
 
-	timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
+	timeline, err := rm.GetTimeline(currentTimeline, refs.LocalTimeline)
 	if err != nil {
 		return knownFiles, nil // Timeline doesn't exist
 	}
@@ -468,7 +444,7 @@ func computeFileHash(filePath string) ([32]byte, error) {
 }
 
 // displayLastSealInfo shows information about the last seal and its contents
-func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline, ivaldiDir string) error {
+func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline string, knownFiles map[string][32]byte) error {
 	timeline, err := refsManager.GetTimeline(currentTimeline, refs.LocalTimeline)
 	if err != nil {
 		return err
@@ -489,12 +465,6 @@ func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline, ivaldiD
 		fmt.Printf("Last seal: %s\n", colors.Cyan(shortHash))
 	}
 
-	// Get files from the last commit
-	knownFiles, err := getKnownFiles(ivaldiDir)
-	if err != nil {
-		return err
-	}
-
 	if len(knownFiles) > 0 {
 		fmt.Printf("Files tracked in last seal: %s\n", colors.InfoText(fmt.Sprintf("%d", len(knownFiles))))
 	}
@@ -502,17 +472,3 @@ func displayLastSealInfo(refsManager *refs.RefsManager, currentTimeline, ivaldiD
 	return nil
 }
 
-// isIgnored checks if a file path matches any ignore patterns
-func isIgnored(path string, patterns []string) bool {
-	for _, pattern := range patterns {
-		// Simple pattern matching - in a full implementation,
-		// this would support full glob patterns
-		if matched, _ := filepath.Match(pattern, path); matched {
-			return true
-		}
-		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
-			return true
-		}
-	}
-	return false
-}

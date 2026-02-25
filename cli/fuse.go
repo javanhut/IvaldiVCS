@@ -735,31 +735,17 @@ func continueMerge(ivaldiDir, workDir string) error {
 		return fmt.Errorf("no files staged. Stage resolved files with 'ivaldi gather <file>...'")
 	}
 
-	// Scan workspace for staged files
+	// Scan only the staged files (not the entire workspace)
 	materializer := workspace.NewMaterializer(casStore, ivaldiDir, workDir)
-
-	wsIndex, err := materializer.ScanWorkspace()
+	wsIndex, err := materializer.ScanSpecificFiles(stagedFiles)
 	if err != nil {
-		return fmt.Errorf("failed to scan workspace: %w", err)
+		return fmt.Errorf("failed to scan staged files: %w", err)
 	}
 
 	wsLoader := wsindex.NewLoader(casStore)
-	allFiles, err := wsLoader.ListAll(wsIndex)
+	mergedFiles, err := wsLoader.ListAll(wsIndex)
 	if err != nil {
 		return fmt.Errorf("failed to list files: %w", err)
-	}
-
-	// Filter to staged files
-	var mergedFiles []wsindex.FileMetadata
-	stagedMap := make(map[string]bool)
-	for _, f := range stagedFiles {
-		stagedMap[f] = true
-	}
-
-	for _, file := range allFiles {
-		if stagedMap[file.Path] {
-			mergedFiles = append(mergedFiles, file)
-		}
 	}
 
 	// Initialize MMR

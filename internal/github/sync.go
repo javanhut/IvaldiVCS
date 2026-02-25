@@ -47,9 +47,9 @@ func NewRepoSyncer(ivaldiDir, workDir string) (*RepoSyncer, error) {
 	}, nil
 }
 
-// NewRepoSyncerForClone creates a repository syncer for cloning/downloading
-// Authentication is optional - works for public repos without login
-func NewRepoSyncerForClone(ivaldiDir, workDir string) (*RepoSyncer, error) {
+// NewRepoSyncerOptionalAuth creates a repository syncer that works with or without auth.
+// Suitable for read-only operations on public repos (scout, harvest, download).
+func NewRepoSyncerOptionalAuth(ivaldiDir, workDir string) (*RepoSyncer, error) {
 	// Use optional auth - allows downloading public repos without login
 	client := NewClientOptionalAuth()
 
@@ -66,6 +66,11 @@ func NewRepoSyncerForClone(ivaldiDir, workDir string) (*RepoSyncer, error) {
 		workDir:   workDir,
 		casStore:  casStore,
 	}, nil
+}
+
+// IsAuthenticated returns whether the syncer has auth configured
+func (rs *RepoSyncer) IsAuthenticated() bool {
+	return rs.client.IsAuthenticated()
 }
 
 // PullChanges pulls latest changes from GitHub

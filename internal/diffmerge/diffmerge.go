@@ -717,21 +717,23 @@ func (a *Analyzer) DetectRenames(diff *WorkspaceDiff, threshold float64) []Renam
 		}
 	}
 
-	// Compare each removed file with each added file
-	for _, removedFile := range removed {
-		if removedFile.OldFile == nil {
+	// Build hash index of removed files for O(n+m) lookup
+	removedByHash := make(map[cas.Hash][]FileChange)
+	for _, rm := range removed {
+		if rm.OldFile != nil {
+			removedByHash[rm.OldFile.FileRef.Hash] = append(removedByHash[rm.OldFile.FileRef.Hash], rm)
+		}
+	}
+
+	// Match added files against removed files by hash
+	for _, addedFile := range added {
+		if addedFile.NewFile == nil {
 			continue
 		}
-
-		for _, addedFile := range added {
-			if addedFile.NewFile == nil {
-				continue
-			}
-
-			// Check if content is similar (same hash indicates exact match)
-			if removedFile.OldFile.FileRef.Hash == addedFile.NewFile.FileRef.Hash {
+		if matches, ok := removedByHash[addedFile.NewFile.FileRef.Hash]; ok {
+			for _, rm := range matches {
 				renames = append(renames, RenameDetection{
-					OldPath:    removedFile.Path,
+					OldPath:    rm.Path,
 					NewPath:    addedFile.Path,
 					Similarity: 1.0, // Exact match
 				})
