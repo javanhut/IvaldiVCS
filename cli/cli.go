@@ -104,6 +104,9 @@ func init() {
 
 	// Sync command
 	rootCmd.AddCommand(syncCmd)
+
+	// TUI command
+	rootCmd.AddCommand(tuiCmd)
 }
 
 func forgeCommand(cmd *cobra.Command, args []string) {
