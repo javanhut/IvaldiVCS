@@ -98,6 +98,16 @@ func (f *FileList) Cursor() int {
 	return f.cursor
 }
 
+// Offset returns the current scroll offset
+func (f *FileList) Offset() int {
+	return f.offset
+}
+
+// VisibleHeight returns the visible height of the list
+func (f *FileList) VisibleHeight() int {
+	return f.height
+}
+
 // SelectedItem returns the item under the cursor, or nil
 func (f *FileList) SelectedItem() *FileItem {
 	if f.cursor >= 0 && f.cursor < len(f.Items) {

@@ -83,8 +83,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.statusBar.Width = msg.Width
+		m.tabs.Width = msg.Width
 
-		contentHeight := msg.Height - 4
+		contentHeight := msg.Height - 5
 
 		for id, v := range m.views {
 			sizeMsg := tea.WindowSizeMsg{
@@ -101,6 +102,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		// Handle Escape key with progressive behavior
+		if key.Matches(msg, m.keys.Escape) {
+			// If active view has input open, forward esc to it
+			if v, ok := m.views[m.activeTab]; ok && v.HasActiveInput() {
+				updated, cmd := v.Update(msg)
+				m.views[m.activeTab] = updated.(style.View)
+				return m, cmd
+			}
+			// If help is showing, dismiss it
+			if m.showHelp {
+				m.showHelp = false
+				return m, nil
+			}
+			// If not on Status tab, go to Status
+			if m.activeTab != style.TabStatus {
+				return m, m.switchTab(style.TabStatus)
+			}
+			// On Status tab with nothing active, quit
+			return m, tea.Quit
+		}
+
 		if key.Matches(msg, m.keys.Help) {
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -147,6 +169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.Staged = msg.Staged
 		m.statusBar.Modified = msg.Modified
 		m.statusBar.Untracked = msg.Untracked
+		m.statusBar.Deleted = msg.Deleted
 		return m, nil
 
 	case style.ErrMsg:
@@ -178,8 +201,8 @@ func (m Model) View() string {
 	b.WriteString(m.tabs.View(m.theme))
 	b.WriteString("\n")
 
-	// Content area
-	contentHeight := m.height - 4
+	// Content area (tab bar + footer + status bar = 5 lines overhead)
+	contentHeight := m.height - 5
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -208,6 +231,14 @@ func (m Model) View() string {
 		b.WriteString(m.theme.Error.Render("Error: " + m.err.Error()))
 	}
 
+	// Footer with key hints from active view
+	if !m.showHelp {
+		if v, ok := m.views[m.activeTab]; ok {
+			b.WriteString("\n")
+			b.WriteString(m.theme.Dim.Render("  " + v.ShortHelp()))
+		}
+	}
+
 	// Status bar
 	b.WriteString("\n")
 	b.WriteString(m.statusBar.View(m.theme))
@@ -226,7 +257,7 @@ func (m *Model) switchTab(tab style.TabID) tea.Cmd {
 func (m *Model) initActiveView() tea.Cmd {
 	if v, ok := m.views[m.activeTab]; ok {
 		if m.width > 0 && m.height > 0 {
-			contentHeight := m.height - 4
+			contentHeight := m.height - 5
 			updated, cmd := v.Update(tea.WindowSizeMsg{
 				Width:  m.width,
 				Height: contentHeight,

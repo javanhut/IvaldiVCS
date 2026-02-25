@@ -3,6 +3,7 @@ package views
 import (
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/javanhut/Ivaldi-vcs/internal/tui/style"
 )
 
@@ -30,6 +31,7 @@ func (h HelpModel) View(width, height int, theme style.Theme) string {
 		{
 			title: "Global",
 			keys: []helpEntry{
+				{"esc", "Back / dismiss / quit"},
 				{"q / ctrl+c", "Quit"},
 				{"?", "Toggle help"},
 				{"tab", "Next tab"},
@@ -45,6 +47,7 @@ func (h HelpModel) View(width, height int, theme style.Theme) string {
 				{"a", "Gather all unstaged files"},
 				{"u", "Ungather all staged files"},
 				{"s", "Seal (commit) staged files"},
+				{"i", "Show/hide ignored files"},
 				{"r", "Refresh status"},
 				{"g", "Jump to top"},
 				{"G", "Jump to bottom"},
@@ -109,6 +112,19 @@ func (h HelpModel) View(width, height int, theme style.Theme) string {
 		},
 	}
 
+	glossary := []helpEntry{
+		{"Timeline", "Branch — a line of development"},
+		{"Seal", "Commit — a snapshot of changes"},
+		{"Gather", "Stage — mark files for next seal"},
+		{"Ungather", "Unstage — remove from staging"},
+		{"Fuse", "Merge — combine two timelines"},
+		{"Portal", "Remote — link to GitHub repository"},
+		{"Upload", "Push — send changes to remote"},
+		{"Sync", "Pull — fetch changes from remote"},
+		{"Harvest", "Fetch — download remote timelines"},
+		{"Scout", "List remote timeline information"},
+	}
+
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(theme.Title.Render("  Ivaldi TUI — Keybinding Reference"))
@@ -128,9 +144,32 @@ func (h HelpModel) View(width, height int, theme style.Theme) string {
 		b.WriteString("\n")
 	}
 
+	// Glossary
+	b.WriteString("  ")
+	b.WriteString(theme.SectionHead.Render("Glossary — Ivaldi Naming Conventions"))
+	b.WriteString("\n")
+	for _, entry := range glossary {
+		b.WriteString("    ")
+		b.WriteString(theme.HelpKey.Render(padRight(entry.key, 12)))
+		b.WriteString(theme.HelpDesc.Render(entry.desc))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
 	b.WriteString(theme.Dim.Render("  Press any key to dismiss"))
 
-	return b.String()
+	// Wrap in bordered box
+	boxStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(0, 1)
+
+	innerWidth := width - 4
+	if innerWidth < 40 {
+		innerWidth = 40
+	}
+
+	return boxStyle.Width(innerWidth).Render(b.String())
 }
 
 // padRight pads a string to the given width

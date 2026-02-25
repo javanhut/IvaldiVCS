@@ -423,20 +423,17 @@ func (m *RemoteModel) View() string {
 		b.WriteString(m.dialog.View(m.theme))
 	}
 
-	// Footer
-	b.WriteString("\n")
-	if m.portal != nil {
-		b.WriteString(m.theme.Dim.Render("  s:scout  u:upload  y:sync  h:harvest all  enter:harvest selected  p:portal  r:refresh"))
-	} else {
-		b.WriteString(m.theme.Dim.Render("  p:set portal  r:refresh"))
-	}
-
 	return b.String()
 }
 
 // ShortHelp returns a short help string
 func (m *RemoteModel) ShortHelp() string {
 	return "s:scout  u:upload  y:sync  h:harvest  p:portal  r:refresh"
+}
+
+// HasActiveInput returns whether the remote view has an active input dialog
+func (m *RemoteModel) HasActiveInput() bool {
+	return m.dialog.IsActive()
 }
 
 // Async commands

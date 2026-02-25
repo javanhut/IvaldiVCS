@@ -252,6 +252,11 @@ func (m *DiffModel) ShortHelp() string {
 	return "j/k:scroll  n/p:next/prev file  s:staged  g/G:top/bottom  r:refresh"
 }
 
+// HasActiveInput returns whether the diff view has an active input dialog
+func (m *DiffModel) HasActiveInput() bool {
+	return false
+}
+
 // loadDiff loads diff data asynchronously
 func (m *DiffModel) loadDiff() tea.Cmd {
 	workDir := m.workDir

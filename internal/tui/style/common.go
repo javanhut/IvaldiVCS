@@ -36,6 +36,7 @@ func AllTabs() []TabInfo {
 type View interface {
 	tea.Model
 	ShortHelp() string
+	HasActiveInput() bool
 }
 
 // Messages

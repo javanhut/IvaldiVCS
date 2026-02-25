@@ -323,16 +323,6 @@ func (m *FuseModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Footer
-	b.WriteString("\n")
-	if m.fuseStatus != nil && m.fuseStatus.InProgress {
-		b.WriteString(m.theme.Dim.Render("  a:abort  s:retry strategy  r:refresh"))
-	} else if m.state == fuseStateResult {
-		b.WriteString(m.theme.Dim.Render("  r:refresh"))
-	} else {
-		b.WriteString(m.theme.Dim.Render("  j/k:navigate  enter/f:fuse  s:strategy  r:refresh"))
-	}
-
 	return b.String()
 }
 
@@ -498,6 +488,11 @@ func (m *FuseModel) renderResult(b *strings.Builder) {
 // ShortHelp returns a short help string
 func (m *FuseModel) ShortHelp() string {
 	return "j/k:navigate  enter:fuse  s:strategy  a:abort  r:refresh"
+}
+
+// HasActiveInput returns whether the fuse view has an active input dialog
+func (m *FuseModel) HasActiveInput() bool {
+	return false
 }
 
 // Async commands

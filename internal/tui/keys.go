@@ -6,6 +6,7 @@ import "github.com/charmbracelet/bubbles/key"
 type KeyMap struct {
 	Quit       key.Binding
 	Help       key.Binding
+	Escape     key.Binding
 	Tab        key.Binding
 	ShiftTab   key.Binding
 	Tab1       key.Binding
@@ -26,6 +27,10 @@ func DefaultKeyMap() KeyMap {
 		Help: key.NewBinding(
 			key.WithKeys("?"),
 			key.WithHelp("?", "help"),
+		),
+		Escape: key.NewBinding(
+			key.WithKeys("esc"),
+			key.WithHelp("esc", "back/dismiss/quit"),
 		),
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),

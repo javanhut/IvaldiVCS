@@ -14,6 +14,7 @@ type StatusBar struct {
 	Staged    int
 	Modified  int
 	Untracked int
+	Deleted   int
 	Width     int
 }
 
@@ -47,6 +48,9 @@ func (s StatusBar) View(theme style.Theme) string {
 	if s.Untracked > 0 {
 		counts = append(counts, fmt.Sprintf("%d untracked", s.Untracked))
 	}
+	if s.Deleted > 0 {
+		counts = append(counts, fmt.Sprintf("%d deleted", s.Deleted))
+	}
 	if len(counts) > 0 {
 		parts = append(parts, theme.StatusValue.Render(strings.Join(counts, ", ")))
 	}
@@ -55,7 +59,7 @@ func (s StatusBar) View(theme style.Theme) string {
 	content := strings.Join(parts, divider)
 
 	// Add help hint on the right
-	helpHint := theme.Help.Render("?=help")
+	helpHint := theme.Help.Render("esc=back  ?=help")
 	contentWidth := lipglossWidth(content)
 	helpWidth := lipglossWidth(helpHint)
 

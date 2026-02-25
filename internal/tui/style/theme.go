@@ -41,6 +41,19 @@ type Theme struct {
 
 	// Viewport
 	ViewportBorder lipgloss.Style
+
+	// Timeline header (status view)
+	TimelineHeader lipgloss.Style
+	TimelineName   lipgloss.Style
+	SealBadge      lipgloss.Style
+	FileCountBadge lipgloss.Style
+
+	// Separators
+	SectionDivider lipgloss.Style
+	TabSeparator   lipgloss.Style
+
+	// Brand
+	Brand lipgloss.Style
 }
 
 // DefaultTheme returns the default TUI theme
@@ -129,5 +142,27 @@ func DefaultTheme() Theme {
 		ViewportBorder: lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#444444")),
+
+		// Timeline header (status view)
+		TimelineHeader: lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Padding(0, 1),
+		TimelineName: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#7D56F4")),
+		SealBadge: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#55FFFF")),
+		FileCountBadge: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#888888")),
+		SectionDivider: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#444444")),
+		TabSeparator: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#444444")),
+		Brand: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#7D56F4")).
+			Padding(0, 1),
 	}
 }

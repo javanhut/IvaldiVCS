@@ -7,16 +7,18 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/javanhut/Ivaldi-vcs/internal/engine"
+	"github.com/javanhut/Ivaldi-vcs/internal/ignore"
 	"github.com/javanhut/Ivaldi-vcs/internal/tui/components"
 	"github.com/javanhut/Ivaldi-vcs/internal/tui/style"
 )
 
 // statusKeyMap defines keybindings specific to the status view
 type statusKeyMap struct {
-	GatherAll   key.Binding
-	UngatherAll key.Binding
-	Refresh     key.Binding
-	Seal        key.Binding
+	GatherAll     key.Binding
+	UngatherAll   key.Binding
+	Refresh       key.Binding
+	Seal          key.Binding
+	ToggleIgnored key.Binding
 }
 
 func defaultStatusKeyMap() statusKeyMap {
@@ -37,6 +39,10 @@ func defaultStatusKeyMap() statusKeyMap {
 			key.WithKeys("s"),
 			key.WithHelp("s", "seal (commit)"),
 		),
+		ToggleIgnored: key.NewBinding(
+			key.WithKeys("i"),
+			key.WithHelp("i", "toggle ignored"),
+		),
 	}
 }
 
@@ -54,12 +60,19 @@ type StatusModel struct {
 	err       error
 	loading   bool
 	sealMsg   string // success message after seal
+
+	// Ignored files
+	showIgnored    bool
+	ignorePatterns []string // user patterns from .ivaldiignore
+	ignoredFiles   []string // files matched by ignore patterns
 }
 
 // statusLoadedMsg carries loaded status data
 type statusLoadedMsg struct {
-	result *engine.StatusResult
-	err    error
+	result         *engine.StatusResult
+	err            error
+	ignorePatterns []string
+	ignoredFiles   []string
 }
 
 // statusStagingDoneMsg signals staging operation completed
@@ -101,7 +114,8 @@ func (m *StatusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		listHeight := msg.Height - 4
+		// Account for timeline header (3 lines) + summary line + spacing
+		listHeight := msg.Height - 8
 		if listHeight < 1 {
 			listHeight = 1
 		}
@@ -116,6 +130,8 @@ func (m *StatusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = msg.result
 		m.err = nil
+		m.ignorePatterns = msg.ignorePatterns
+		m.ignoredFiles = msg.ignoredFiles
 		m.rebuildFileList()
 
 		return m, func() tea.Msg {
@@ -181,6 +197,10 @@ func (m *StatusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("no files staged. Gather files first")
 			return m, nil
 
+		case key.Matches(msg, m.keys.ToggleIgnored):
+			m.showIgnored = !m.showIgnored
+			return m, nil
+
 		case key.Matches(msg, m.keys.GatherAll):
 			return m, m.gatherAll()
 
@@ -217,6 +237,10 @@ func (m *StatusModel) View() string {
 
 	var b strings.Builder
 
+	// Timeline header panel
+	b.WriteString(m.renderTimelineHeader())
+	b.WriteString("\n")
+
 	// Seal success message
 	if m.sealMsg != "" {
 		b.WriteString("  ")
@@ -230,26 +254,15 @@ func (m *StatusModel) View() string {
 		b.WriteString("\n\n")
 		b.WriteString(m.theme.Dim.Render("  Press r to refresh"))
 	} else {
-		var parts []string
-		if len(m.status.Staged) > 0 {
-			parts = append(parts, m.theme.Staged.Render(fmt.Sprintf("%d staged", len(m.status.Staged))))
-		}
-		if len(m.status.Modified) > 0 {
-			parts = append(parts, m.theme.Modified.Render(fmt.Sprintf("%d modified", len(m.status.Modified))))
-		}
-		if len(m.status.Untracked) > 0 {
-			parts = append(parts, m.theme.Untracked.Render(fmt.Sprintf("%d untracked", len(m.status.Untracked))))
-		}
-		if len(m.status.Deleted) > 0 {
-			parts = append(parts, m.theme.Deleted.Render(fmt.Sprintf("%d deleted", len(m.status.Deleted))))
-		}
-
-		b.WriteString("  ")
-		b.WriteString(strings.Join(parts, m.theme.Dim.Render(" | ")))
-		b.WriteString("\n\n")
+		// Grouped summary header
+		b.WriteString(m.renderGroupedSummary())
+		b.WriteString("\n")
 
 		b.WriteString(m.fileList.View(m.theme))
 	}
+
+	// Ignored files section
+	b.WriteString(m.renderIgnoredSection())
 
 	// Dialog overlay
 	if m.dialog.IsActive() {
@@ -259,9 +272,114 @@ func (m *StatusModel) View() string {
 	return b.String()
 }
 
+// renderTimelineHeader renders a bordered panel showing timeline, seal, and file count
+func (m *StatusModel) renderTimelineHeader() string {
+	timeline := m.status.Timeline
+	if timeline == "" {
+		timeline = "(none)"
+	}
+	seal := m.status.SealName
+	if seal == "" {
+		seal = "(no seals)"
+	}
+
+	content := fmt.Sprintf("%s %s  %s  %s %s  %s  %s",
+		m.theme.StatusKey.Render("Timeline:"),
+		m.theme.TimelineName.Render(timeline),
+		m.theme.SectionDivider.Render("│"),
+		m.theme.StatusKey.Render("Seal:"),
+		m.theme.SealBadge.Render(seal),
+		m.theme.SectionDivider.Render("│"),
+		m.theme.FileCountBadge.Render(fmt.Sprintf("Tracking %d file(s)", m.status.FileCount)),
+	)
+
+	return m.theme.TimelineHeader.Width(m.width - 2).Render(content)
+}
+
+// renderGroupedSummary renders category counts as distinct styled sections
+func (m *StatusModel) renderGroupedSummary() string {
+	var parts []string
+	if len(m.status.Staged) > 0 {
+		parts = append(parts, m.theme.Staged.Render(fmt.Sprintf(" %d staged ", len(m.status.Staged))))
+	}
+	if len(m.status.Modified) > 0 {
+		parts = append(parts, m.theme.Modified.Render(fmt.Sprintf(" %d modified ", len(m.status.Modified))))
+	}
+	if len(m.status.Deleted) > 0 {
+		parts = append(parts, m.theme.Deleted.Render(fmt.Sprintf(" %d deleted ", len(m.status.Deleted))))
+	}
+	if len(m.status.Untracked) > 0 {
+		parts = append(parts, m.theme.Untracked.Render(fmt.Sprintf(" %d untracked ", len(m.status.Untracked))))
+	}
+
+	return "  " + strings.Join(parts, m.theme.SectionDivider.Render(" │ "))
+}
+
+// renderIgnoredSection renders the ignored files toggle section
+func (m *StatusModel) renderIgnoredSection() string {
+	ignoredCount := len(m.ignoredFiles)
+	if ignoredCount == 0 && len(m.ignorePatterns) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+
+	if !m.showIgnored {
+		b.WriteString("\n")
+		b.WriteString(m.theme.Dim.Render(fmt.Sprintf("  %d ignored file(s) hidden — press i to show", ignoredCount)))
+	} else {
+		b.WriteString("\n\n  ")
+		b.WriteString(m.theme.SectionHead.Render("Ignored Files"))
+		b.WriteString("\n")
+
+		if len(m.ignoredFiles) > 0 {
+			for _, f := range m.ignoredFiles {
+				b.WriteString("    ")
+				b.WriteString(m.theme.Ignored.Render(f))
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString("    ")
+			b.WriteString(m.theme.Dim.Render("(no ignored files detected)"))
+			b.WriteString("\n")
+		}
+
+		// Show patterns
+		b.WriteString("\n  ")
+		b.WriteString(m.theme.SectionHead.Render("Built-in Patterns"))
+		b.WriteString("\n")
+		for _, p := range ignore.DefaultPatterns {
+			b.WriteString("    ")
+			b.WriteString(m.theme.Dim.Render(p))
+			b.WriteString("\n")
+		}
+
+		if len(m.ignorePatterns) > 0 {
+			b.WriteString("\n  ")
+			b.WriteString(m.theme.SectionHead.Render(".ivaldiignore Patterns"))
+			b.WriteString("\n")
+			for _, p := range m.ignorePatterns {
+				b.WriteString("    ")
+				b.WriteString(m.theme.Dim.Render(p))
+				b.WriteString("\n")
+			}
+		}
+
+		b.WriteString("\n")
+		b.WriteString(m.theme.Dim.Render("  Press i to hide"))
+	}
+
+	return b.String()
+}
+
 // ShortHelp returns a short help string for the status bar
 func (m *StatusModel) ShortHelp() string {
-	return "j/k:nav  space:toggle  a:gather all  u:ungather all  s:seal  r:refresh"
+	return "j/k:nav  space:toggle  a:gather all  u:ungather all  s:seal  i:ignored  r:refresh"
+}
+
+// HasActiveInput returns whether the status view has an active input dialog
+func (m *StatusModel) HasActiveInput() bool {
+	return m.dialog.IsActive()
 }
 
 // rebuildFileList rebuilds the file list from current status
@@ -295,7 +413,24 @@ func (m *StatusModel) loadStatus() tea.Cmd {
 	ivaldiDir := m.ivaldiDir
 	return func() tea.Msg {
 		result, err := engine.GetFileStatuses(workDir, ivaldiDir)
-		return statusLoadedMsg{result: result, err: err}
+
+		// Load ignore patterns
+		patterns, _ := ignore.LoadPatterns(workDir)
+
+		// Collect ignored file paths from status if available
+		var ignoredFiles []string
+		if result != nil {
+			for _, f := range result.Ignored {
+				ignoredFiles = append(ignoredFiles, f.Path)
+			}
+		}
+
+		return statusLoadedMsg{
+			result:         result,
+			err:            err,
+			ignorePatterns: patterns,
+			ignoredFiles:   ignoredFiles,
+		}
 	}
 }
 

@@ -430,16 +430,17 @@ func (m *TimelineModel) View() string {
 		b.WriteString(m.theme.Dim.Render("  (enter to confirm, esc to cancel)"))
 	}
 
-	// Footer hint
-	b.WriteString("\n")
-	b.WriteString(m.theme.Dim.Render("  enter:switch  c:create  d:remove  R:rename  r:refresh"))
-
 	return b.String()
 }
 
 // ShortHelp returns a short help string
 func (m *TimelineModel) ShortHelp() string {
 	return "j/k:navigate  enter:switch  c:create  d:remove  R:rename  r:refresh"
+}
+
+// HasActiveInput returns whether the timeline view has an active input dialog
+func (m *TimelineModel) HasActiveInput() bool {
+	return m.mode != inputNone
 }
 
 // loadTimelines loads timeline data asynchronously

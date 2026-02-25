@@ -180,6 +180,11 @@ func (m *LogModel) ShortHelp() string {
 	return "j/k:scroll  o:oneline/full  t:all timelines  r:refresh"
 }
 
+// HasActiveInput returns whether the log view has an active input dialog
+func (m *LogModel) HasActiveInput() bool {
+	return false
+}
+
 // renderContent rebuilds the viewport content from commits
 func (m *LogModel) renderContent() {
 	if !m.ready {
