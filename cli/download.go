@@ -216,7 +216,7 @@ func handleGitHubDownload(rawURL string, args []string, depth int, skipHistory b
 	}
 
 	// Create syncer for cloning (uses optional auth - works for public repos without login)
-	syncer, err := github.NewRepoSyncerForClone(ivaldiDir, workDir)
+	syncer, err := github.NewRepoSyncerOptionalAuth(ivaldiDir, workDir)
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to create syncer: %w", err)

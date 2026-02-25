@@ -50,14 +50,19 @@ Examples:
 			return fmt.Errorf("no GitHub repository configured. Use 'ivaldi portal add owner/repo' or download from GitHub first")
 		}
 
-		// Create syncer
-		syncer, err := github.NewRepoSyncer(ivaldiDir, workDir)
+		// Create syncer (optional auth - works for public repos without login)
+		syncer, err := github.NewRepoSyncerOptionalAuth(ivaldiDir, workDir)
 		if err != nil {
 			return fmt.Errorf("failed to create GitHub syncer: %w", err)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+
+		if !syncer.IsAuthenticated() {
+			fmt.Println("Note: Running without authentication (60 API requests/hour limit).")
+			fmt.Printf("      Run 'ivaldi auth login' for higher limits.\n\n")
+		}
 
 		fmt.Printf("Harvesting from GitHub repository: %s/%s\n", owner, repo)
 
