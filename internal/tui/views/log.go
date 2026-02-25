@@ -84,7 +84,6 @@ func (m *LogModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, msg.Height)
-			m.viewport.HighPerformanceRendering = false
 			m.ready = true
 		} else {
 			m.viewport.Width = msg.Width
