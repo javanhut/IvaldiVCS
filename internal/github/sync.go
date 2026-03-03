@@ -103,7 +103,11 @@ func (rs *RepoSyncer) PullChanges(ctx context.Context, owner, repo, branch strin
 	}
 
 	// Create new commit
-	err = rs.createIvaldiCommit(fmt.Sprintf("Pull from GitHub: %s", branchInfo.Commit.SHA[:7]))
+	err = rs.createIvaldiCommit(
+		fmt.Sprintf("Pull from GitHub: %s", branchInfo.Commit.SHA[:7]),
+		branch,
+		branchInfo.Commit.SHA,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create commit: %w", err)
 	}
@@ -135,12 +139,17 @@ func (rs *RepoSyncer) GetRemoteTimelines(ctx context.Context, owner, repo string
 	defer refsManager.Close()
 
 	for _, branch := range branches {
-		// Create or update remote timeline reference
 		description := fmt.Sprintf("Remote branch from %s/%s (SHA: %s)", owner, repo, branch.Commit.SHA[:7])
-		err = refsManager.CreateRemoteTimeline(branch.Name, branch.Commit.SHA, description)
-		if err != nil {
-			// Timeline might already exist, that's okay
+		existing, getErr := refsManager.GetTimeline(branch.Name, refs.RemoteTimeline)
+		if getErr == nil {
+			if err := refsManager.UpdateRemoteTimeline(branch.Name, existing.Blake3Hash, existing.SHA256Hash, branch.Commit.SHA); err != nil {
+				logging.Warn("Failed to update remote timeline", "timeline", branch.Name, "error", err)
+			}
 			continue
+		}
+
+		if err := refsManager.CreateRemoteTimeline(branch.Name, branch.Commit.SHA, description); err != nil {
+			logging.Warn("Failed to create remote timeline", "timeline", branch.Name, "error", err)
 		}
 	}
 
@@ -303,8 +312,11 @@ func (rs *RepoSyncer) SyncTimeline(ctx context.Context, owner, repo, branch stri
 	}
 
 	// Create new commit for synced state
-	err = rs.createIvaldiCommit(fmt.Sprintf("Sync with remote %s/%s@%s",
-		owner, repo, branchInfo.Commit.SHA[:7]))
+	err = rs.createIvaldiCommit(
+		fmt.Sprintf("Sync with remote %s/%s@%s", owner, repo, branchInfo.Commit.SHA[:7]),
+		branch,
+		branchInfo.Commit.SHA,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create commit after sync: %w", err)
 	}

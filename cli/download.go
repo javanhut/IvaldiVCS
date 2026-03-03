@@ -698,7 +698,7 @@ Examples:
 		}
 
 		fmt.Printf("Uploading to GitHub: %s/%s (branch: %s)...\n", owner, repo, branch)
-		if err := syncer.PushCommit(ctx, owner, repo, branch, commitHash, forceUpload); err != nil {
+		if err := syncer.PushCommit(ctx, owner, repo, branch, commitHash, forceUpload, currentTimeline); err != nil {
 			return fmt.Errorf("failed to push to GitHub: %w", err)
 		}
 

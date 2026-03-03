@@ -30,7 +30,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 			fileCount, err := rs.downloadAndExtractArchive(ctx, owner, repo, branchName)
 			if err == nil {
 				fmt.Printf("Extracted %d files from archive (branch: %s)\n", fileCount, branchName)
-				err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo))
+				err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo), branchName, "")
 				if err != nil {
 					return "", fmt.Errorf("failed to create Ivaldi commit: %w", err)
 				}
@@ -71,7 +71,7 @@ func (rs *RepoSyncer) CloneRepository(ctx context.Context, owner, repo string, d
 		}
 
 		fmt.Printf("Extracted %d files from archive (branch: %s)\n", fileCount, defaultBranch)
-		err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo))
+		err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo), defaultBranch, "")
 		if err != nil {
 			return "", fmt.Errorf("failed to create Ivaldi commit: %w", err)
 		}
@@ -174,7 +174,7 @@ func (rs *RepoSyncer) cloneSnapshot(ctx context.Context, owner, repo, commitSHA,
 	}
 
 	// Create single initial commit in Ivaldi
-	err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo))
+	err = rs.createIvaldiCommit(fmt.Sprintf("Import from GitHub: %s/%s", owner, repo), branchName, commitSHA)
 	if err != nil {
 		return fmt.Errorf("failed to create Ivaldi commit: %w", err)
 	}
