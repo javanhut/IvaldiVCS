@@ -203,9 +203,13 @@ func displayRemoteStatus(refsManager *refs.RefsManager, timelineName string) err
 		return nil
 	}
 
-	// Check if there's a corresponding remote timeline
-	remoteName := fmt.Sprintf("origin/%s", timelineName)
-	remoteTimeline, err := refsManager.GetTimeline(remoteName, refs.RemoteTimeline)
+	// Check if there's a corresponding remote timeline.
+	// Prefer plain branch name (current storage format), but support legacy "origin/<name>" refs.
+	remoteTimeline, err := refsManager.GetTimeline(timelineName, refs.RemoteTimeline)
+	if err != nil {
+		remoteName := fmt.Sprintf("origin/%s", timelineName)
+		remoteTimeline, err = refsManager.GetTimeline(remoteName, refs.RemoteTimeline)
+	}
 	if err != nil {
 		fmt.Printf("Remote: %s/%s (not tracked)\n", owner, repo)
 		return nil
@@ -217,9 +221,11 @@ func displayRemoteStatus(refsManager *refs.RefsManager, timelineName string) err
 		return fmt.Errorf("failed to get local timeline: %w", err)
 	}
 
-	// Compare hashes to determine sync status
+	// Compare tracked Git SHA first (more reliable for remote sync), then content hash fallback.
 	var status string
-	if localTimeline.Blake3Hash == remoteTimeline.Blake3Hash {
+	if localTimeline.GitSHA1Hash != "" && localTimeline.GitSHA1Hash == remoteTimeline.GitSHA1Hash {
+		status = "up to date"
+	} else if localTimeline.Blake3Hash == remoteTimeline.Blake3Hash {
 		status = "up to date"
 	} else {
 		status = "needs comparison"

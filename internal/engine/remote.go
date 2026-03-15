@@ -205,7 +205,7 @@ func Upload(ivaldiDir, workDir string, force bool) (*UploadResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	if err := syncer.PushCommit(ctx, owner, repo, currentTimeline, commitHash, force); err != nil {
+	if err := syncer.PushCommit(ctx, owner, repo, currentTimeline, commitHash, force, currentTimeline); err != nil {
 		return nil, fmt.Errorf("failed to push: %w", err)
 	}
 

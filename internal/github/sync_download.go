@@ -446,8 +446,8 @@ func (rs *RepoSyncer) downloadFile(ctx context.Context, owner, repo string, entr
 	return nil
 }
 
-// createIvaldiCommit creates an Ivaldi commit from the downloaded files
-func (rs *RepoSyncer) createIvaldiCommit(message string) error {
+// createIvaldiCommit creates an Ivaldi commit from downloaded files and updates timeline metadata.
+func (rs *RepoSyncer) createIvaldiCommit(message, timelineName, gitSHA string) error {
 	// Scan workspace
 	materializer := workspace.NewMaterializer(rs.casStore, rs.ivaldiDir, rs.workDir)
 	wsIndex, err := materializer.ScanWorkspace()
@@ -462,6 +462,29 @@ func (rs *RepoSyncer) createIvaldiCommit(message string) error {
 		return fmt.Errorf("failed to list workspace files: %w", err)
 	}
 
+	// Initialize refs manager and resolve target timeline
+	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
+	if err != nil {
+		return fmt.Errorf("failed to create refs manager: %w", err)
+	}
+	defer refsManager.Close()
+
+	if timelineName == "" {
+		timelineName, err = refsManager.GetCurrentTimeline()
+		if err != nil {
+			timelineName = "main"
+		}
+	}
+
+	// Use current timeline head as parent so sync/pull operations keep local history connected.
+	var parents []cas.Hash
+	existingTimeline, err := refsManager.GetTimeline(timelineName, refs.LocalTimeline)
+	if err == nil && existingTimeline.Blake3Hash != [32]byte{} {
+		var parentHash cas.Hash
+		copy(parentHash[:], existingTimeline.Blake3Hash[:])
+		parents = append(parents, parentHash)
+	}
+
 	// Initialize MMR
 	mmr, err := history.NewPersistentMMR(rs.casStore, rs.ivaldiDir)
 	if err != nil {
@@ -473,7 +496,7 @@ func (rs *RepoSyncer) createIvaldiCommit(message string) error {
 	commitBuilder := commit.NewCommitBuilder(rs.casStore, mmr.MMR)
 	commitObj, err := commitBuilder.CreateCommit(
 		workspaceFiles,
-		nil, // No parent for initial import
+		parents,
 		"github-import",
 		"github-import",
 		message,
@@ -485,32 +508,41 @@ func (rs *RepoSyncer) createIvaldiCommit(message string) error {
 	// Get commit hash
 	commitHash := commitBuilder.GetCommitHash(commitObj)
 
-	// Update timeline
-	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
-	if err != nil {
-		return fmt.Errorf("failed to create refs manager: %w", err)
-	}
-	defer refsManager.Close()
-
-	// Get current timeline or use main
-	currentTimeline, err := refsManager.GetCurrentTimeline()
-	if err != nil {
-		currentTimeline = "main"
-	}
-
 	// Update timeline with commit
 	var hashArray [32]byte
 	copy(hashArray[:], commitHash[:])
 
+	sha256Hash := [32]byte{}
+	if existingTimeline != nil {
+		sha256Hash = existingTimeline.SHA256Hash
+	}
+
 	err = refsManager.UpdateTimeline(
-		currentTimeline,
+		timelineName,
 		refs.LocalTimeline,
 		hashArray,
-		[32]byte{},
-		"",
+		sha256Hash,
+		gitSHA,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update timeline: %w", err)
+	}
+
+	// Keep remote tracking ref aligned when we know the upstream Git commit SHA.
+	if gitSHA != "" {
+		remoteTimeline, remoteErr := refsManager.GetTimeline(timelineName, refs.RemoteTimeline)
+		if remoteErr == nil {
+			_ = refsManager.UpdateRemoteTimeline(timelineName, hashArray, remoteTimeline.SHA256Hash, gitSHA)
+		} else {
+			_ = refsManager.CreateTimeline(
+				timelineName,
+				refs.RemoteTimeline,
+				hashArray,
+				[32]byte{},
+				gitSHA,
+				fmt.Sprintf("Remote branch from sync (%s)", timelineName),
+			)
+		}
 	}
 
 	return nil

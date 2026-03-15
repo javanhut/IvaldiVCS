@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
@@ -273,19 +275,172 @@ type blobUploadResult struct {
 	err  error
 }
 
+const (
+	bootstrapGitDataReadyTimeout = 10 * time.Second
+	bootstrapGitDataInitialRetry = 150 * time.Millisecond
+	bootstrapGitDataMaxRetry     = 1 * time.Second
+)
+
+func changeTypeOrder(changeType string) int {
+	switch changeType {
+	case "added":
+		return 0
+	case "modified":
+		return 1
+	case "deleted":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func sortFileChanges(changes []FileChange) {
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Path == changes[j].Path {
+			return changeTypeOrder(changes[i].Type) < changeTypeOrder(changes[j].Type)
+		}
+		return changes[i].Path < changes[j].Path
+	})
+}
+
+func printFileChanges(changes []FileChange) {
+	if len(changes) == 0 {
+		return
+	}
+
+	added := 0
+	modified := 0
+	deleted := 0
+	for _, change := range changes {
+		switch change.Type {
+		case "added":
+			added++
+		case "modified":
+			modified++
+		case "deleted":
+			deleted++
+		}
+	}
+
+	fmt.Printf("Delta detected: %d changed file(s) [%d added, %d modified, %d deleted]\n",
+		len(changes), added, modified, deleted)
+	fmt.Println("Files to update:")
+	for _, change := range changes {
+		switch change.Type {
+		case "added":
+			fmt.Printf("  + %s\n", change.Path)
+		case "modified":
+			fmt.Printf("  ~ %s\n", change.Path)
+		case "deleted":
+			fmt.Printf("  - %s\n", change.Path)
+		default:
+			fmt.Printf("  ? %s\n", change.Path)
+		}
+	}
+}
+
+// computeFileDeltasFromRemoteTree compares the current local commit tree with a remote Git tree SHA.
+// This is used when local parent metadata is unavailable but remote parent tree is known.
+func (rs *RepoSyncer) computeFileDeltasFromRemoteTree(ctx context.Context, owner, repo, remoteTreeSHA string, currentHash cas.Hash) ([]FileChange, error) {
+	remoteTree, err := rs.client.GetTree(ctx, owner, repo, remoteTreeSHA, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch remote tree: %w", err)
+	}
+
+	remoteFiles := make(map[string]string)
+	for _, entry := range remoteTree.Tree {
+		if entry.Type == "blob" {
+			remoteFiles[entry.Path] = entry.SHA
+		}
+	}
+
+	commitReader := commit.NewCommitReader(rs.casStore)
+	currentCommit, err := commitReader.ReadCommit(currentHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read current commit: %w", err)
+	}
+
+	currentTree, err := commitReader.ReadTree(currentCommit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read current commit tree: %w", err)
+	}
+
+	currentFiles, err := commitReader.ListFiles(currentTree)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list current files: %w", err)
+	}
+
+	seenCurrent := make(map[string]bool, len(currentFiles))
+	changes := make([]FileChange, 0)
+
+	for _, path := range currentFiles {
+		seenCurrent[path] = true
+
+		content, err := commitReader.GetFileContent(currentTree, path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read current file content for %s: %w", path, err)
+		}
+
+		mode := "100644"
+		if len(content) > 0 && content[0] == '#' && bytes.Contains(content[:min(100, len(content))], []byte("!/")) {
+			mode = "100755"
+		}
+
+		remoteSHA, exists := remoteFiles[path]
+		if !exists {
+			changes = append(changes, FileChange{
+				Path:    path,
+				Content: content,
+				Mode:    mode,
+				Type:    "added",
+			})
+			continue
+		}
+
+		localGitSHA := computeGitBlobSHA(content)
+		if localGitSHA != remoteSHA {
+			changes = append(changes, FileChange{
+				Path:    path,
+				Content: content,
+				Mode:    mode,
+				Type:    "modified",
+			})
+		}
+	}
+
+	for path := range remoteFiles {
+		if !seenCurrent[path] {
+			changes = append(changes, FileChange{
+				Path: path,
+				Type: "deleted",
+			})
+		}
+	}
+
+	sortFileChanges(changes)
+	return changes, nil
+}
+
 // createBlobsParallel uploads blobs in parallel
 func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo string, changes []FileChange) ([]GitTreeEntry, error) {
-	// Filter out deletions
+	sortFileChanges(changes)
+
+	// Split upload and delete operations
 	var filesToUpload []FileChange
+	var filesToDelete []FileChange
 	for _, change := range changes {
-		if change.Type != "deleted" {
+		if change.Type == "deleted" {
+			filesToDelete = append(filesToDelete, change)
+		} else {
 			filesToUpload = append(filesToUpload, change)
 		}
 	}
 
-	if len(filesToUpload) == 0 {
+	if len(filesToUpload) == 0 && len(filesToDelete) == 0 {
 		return nil, nil
 	}
+
+	fmt.Printf("Applying delta to GitHub: %d upload(s), %d deletion(s)\n", len(filesToUpload), len(filesToDelete))
 
 	// Determine worker count
 	workers := 8
@@ -296,14 +451,16 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 		workers = 32
 	}
 
-	jobs := make(chan blobUploadJob, len(filesToUpload))
-	results := make(chan blobUploadResult, len(filesToUpload))
+	jobs := make(chan blobUploadJob, max(1, len(filesToUpload)))
+	results := make(chan blobUploadResult, max(1, len(filesToUpload)))
 
 	var wg sync.WaitGroup
 
-	// Create progress bar for uploads
-	uploadBar := progress.NewUploadBar(len(filesToUpload), "Uploading files")
-	defer uploadBar.Finish()
+	var uploadBar *progress.Bar
+	if len(filesToUpload) > 0 {
+		uploadBar = progress.NewUploadBar(len(filesToUpload), "Uploading files")
+		defer uploadBar.Finish()
+	}
 
 	// Start workers
 	for i := 0; i < workers; i++ {
@@ -325,7 +482,9 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 						err:  nil,
 					}
 				}
-				uploadBar.Increment()
+				if uploadBar != nil {
+					uploadBar.Increment()
+				}
 			}
 		}()
 	}
@@ -366,11 +525,15 @@ func (rs *RepoSyncer) createBlobsParallel(ctx context.Context, owner, repo strin
 		return nil, fmt.Errorf("failed to upload %d files: %w", len(errors), errors[0])
 	}
 
-	// NOTE: When using base_tree for delta uploads, deletions are handled automatically
-	// by GitHub. Files not included in the tree array are deleted from the base tree.
-	// Therefore, we do NOT need to (and should not) include deletion entries here.
-	// If we were doing a full tree creation without base_tree, we would need to handle
-	// deletions differently (by omitting them entirely from the tree).
+	// Deletions must be explicit when using base_tree: set sha to null for each removed path.
+	for _, change := range filesToDelete {
+		treeEntries = append(treeEntries, GitTreeEntry{
+			Path: change.Path,
+			Mode: "100644",
+			Type: "blob",
+			SHA:  nil,
+		})
+	}
 
 	return treeEntries, nil
 }
@@ -394,6 +557,91 @@ func (rs *RepoSyncer) bootstrapEmptyRepo(ctx context.Context, owner, repo, branc
 	}
 
 	return uploadResp.Commit.SHA, nil
+}
+
+// waitForGitDataReady waits until Git Data API endpoints become usable after bootstrapping
+// an empty repository through the Contents API.
+func (rs *RepoSyncer) waitForGitDataReady(ctx context.Context, owner, repo, bootstrapCommitSHA string) error {
+	if bootstrapCommitSHA == "" {
+		return fmt.Errorf("bootstrap commit SHA is empty")
+	}
+
+	deadline := time.Now().Add(bootstrapGitDataReadyTimeout)
+	delay := bootstrapGitDataInitialRetry
+	var lastErr error
+
+	for {
+		_, err := rs.client.GetCommit(ctx, owner, repo, bootstrapCommitSHA)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if time.Now().After(deadline) {
+			break
+		}
+
+		sleepFor := delay
+		remaining := time.Until(deadline)
+		if sleepFor > remaining {
+			sleepFor = remaining
+		}
+		if sleepFor <= 0 {
+			break
+		}
+
+		timer := time.NewTimer(sleepFor)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("bootstrap readiness wait cancelled: %w", ctx.Err())
+		case <-timer.C:
+		}
+
+		delay *= 2
+		if delay > bootstrapGitDataMaxRetry {
+			delay = bootstrapGitDataMaxRetry
+		}
+	}
+
+	return fmt.Errorf("git data API was not ready after bootstrap commit %s: %w", bootstrapCommitSHA, lastErr)
+}
+
+// createGitCommitOnBranch creates a commit with the provided tree and updates the target branch.
+func (rs *RepoSyncer) createGitCommitOnBranch(ctx context.Context, owner, repo, branch, message, treeSHA, parentSHA string, force bool) (*CommitResponse, error) {
+	var parents []string
+	if parentSHA != "" {
+		parents = []string{parentSHA}
+	}
+
+	commitReq := CreateCommitRequest{
+		Message: message,
+		Tree:    treeSHA,
+		Parents: parents,
+	}
+	commitResp, err := rs.client.CreateGitCommit(ctx, owner, repo, commitReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create commit: %w", err)
+	}
+
+	if parentSHA == "" {
+		err = rs.client.CreateBranch(ctx, owner, repo, branch, commitResp.SHA)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create branch reference: %w", err)
+		}
+		fmt.Printf("Created branch '%s' with initial commit\n", branch)
+	} else {
+		updateReq := UpdateRefRequest{
+			SHA:   commitResp.SHA,
+			Force: force,
+		}
+		err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", branch), updateReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update branch: %w", err)
+		}
+	}
+
+	return commitResp, nil
 }
 
 // UploadFile uploads a file to GitHub
@@ -428,8 +676,13 @@ func (rs *RepoSyncer) UploadFile(ctx context.Context, owner, repo, path, branch,
 	return nil
 }
 
-// PushCommit pushes an Ivaldi commit to GitHub as a single commit with delta optimization
-func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string, commitHash cas.Hash, force bool) error {
+// PushCommit pushes an Ivaldi commit to GitHub as a single commit with delta optimization.
+// localTimelineName is the local timeline whose commit is being pushed.
+func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string, commitHash cas.Hash, force bool, localTimelineName string) error {
+	if localTimelineName == "" {
+		localTimelineName = branch
+	}
+
 	if force {
 		fmt.Printf("Force pushing commit %s to GitHub...\n", commitHash.String()[:8])
 	} else {
@@ -441,6 +694,7 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	var parentSHA string
 	var parentTreeSHA string
 	var isNewBranch bool
+	bootstrapBranch := branch
 
 	if err != nil {
 		// Branch doesn't exist
@@ -460,6 +714,9 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 			fmt.Printf("Repository is empty, creating initial branch '%s'\n", branch)
 			parentSHA = ""
 			isNewBranch = true
+			if repoInfo.DefaultBranch != "" {
+				bootstrapBranch = repoInfo.DefaultBranch
+			}
 		} else {
 			// Repository has commits, create new branch from default branch
 			err = rs.client.CreateBranch(ctx, owner, repo, branch, defaultBranch.Commit.SHA)
@@ -480,7 +737,7 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	if parentSHA != "" && !isNewBranch && !force {
 		refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
 		if err == nil {
-			timeline, err := refsManager.GetTimeline(branch, refs.LocalTimeline)
+			timeline, err := refsManager.GetTimeline(localTimelineName, refs.LocalTimeline)
 			refsManager.Close()
 			if err == nil && timeline.GitSHA1Hash == parentSHA {
 				fmt.Printf("Already up to date - no new commits to push\n")
@@ -490,7 +747,7 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	}
 
 	// Get parent tree SHA from GitHub for delta optimization
-	if parentSHA != "" && !isNewBranch {
+	if parentSHA != "" {
 		// Fetch the parent commit to get its tree SHA
 		commit, err := rs.client.GetCommit(ctx, owner, repo, parentSHA)
 		if err == nil && commit != nil {
@@ -508,6 +765,7 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	// Determine if we should use delta upload
 	var treeEntries []GitTreeEntry
 	var useDeltaUpload bool
+	var sameTreeCommit bool
 
 	// Try to get parent commit hash from Ivaldi
 	var parentCommitHash cas.Hash
@@ -525,10 +783,12 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 			logging.Warn("Failed to compute deltas, falling back to full upload", "error", err)
 			useDeltaUpload = false
 		} else if len(changes) == 0 {
-			fmt.Printf("No file changes detected\n")
-			return nil
+			fmt.Printf("No file deltas detected against local parent\n")
+			sameTreeCommit = true
+			useDeltaUpload = false
 		} else {
-			fmt.Printf("Delta upload: %d file(s) changed\n", len(changes))
+			sortFileChanges(changes)
+			printFileChanges(changes)
 
 			// Upload blobs in parallel for changed files only
 			treeEntries, err = rs.createBlobsParallel(ctx, owner, repo, changes)
@@ -538,8 +798,53 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 		}
 	}
 
+	// Fallback delta strategy: compare current local commit with remote parent tree directly.
+	if !useDeltaUpload && parentTreeSHA != "" && parentCommitHash == (cas.Hash{}) {
+		changes, err := rs.computeFileDeltasFromRemoteTree(ctx, owner, repo, parentTreeSHA, commitHash)
+		if err != nil {
+			logging.Warn("Failed remote-tree delta comparison, falling back to full upload", "error", err)
+		} else if len(changes) == 0 {
+			fmt.Printf("No file deltas detected against remote tree\n")
+			sameTreeCommit = true
+		} else {
+			fmt.Printf("Using remote-tree delta fallback\n")
+			printFileChanges(changes)
+			treeEntries, err = rs.createBlobsParallel(ctx, owner, repo, changes)
+			if err != nil {
+				return fmt.Errorf("failed to create blobs: %w", err)
+			}
+			useDeltaUpload = true
+		}
+	}
+
+	if sameTreeCommit {
+		if parentSHA == "" || parentTreeSHA == "" {
+			return fmt.Errorf("cannot create same-tree commit without remote parent context")
+		}
+
+		fmt.Printf("No file deltas; creating commit with unchanged tree to preserve seal history\n")
+		commitResp, err := rs.createGitCommitOnBranch(ctx, owner, repo, branch, commitObj.Message, parentTreeSHA, parentSHA, force)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Successfully pushed commit %s to GitHub\n", commitResp.SHA[:7])
+		err = rs.updateTimelineWithGitHubSHA(localTimelineName, branch, commitHash, commitResp.SHA)
+		if err != nil {
+			logging.Warn("Failed to update timeline with GitHub SHA", "error", err)
+		}
+		return nil
+	}
+
 	// Fallback to full upload if delta upload is not available
 	if !useDeltaUpload {
+		if parentSHA != "" && parentTreeSHA == "" {
+			fmt.Printf("Delta upload unavailable: could not read parent tree from remote, falling back to full upload\n")
+		}
+		if parentTreeSHA != "" && parentCommitHash == (cas.Hash{}) {
+			fmt.Printf("Delta upload unavailable: local commit has no parent, falling back to full upload\n")
+		}
+
 		// Read tree
 		tree, err := commitReader.ReadTree(commitObj)
 		if err != nil {
@@ -557,10 +862,14 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 			fmt.Printf("Initial upload to empty repository: %d files\n", len(files))
 
 			// Phase 1: Bootstrap - create temp commit so Git Data API works
-			fmt.Printf("Initializing repository...\n")
-			_, err := rs.bootstrapEmptyRepo(ctx, owner, repo, branch)
+			fmt.Printf("Initializing repository (bootstrap branch: '%s')...\n", bootstrapBranch)
+			bootstrapCommitSHA, err := rs.bootstrapEmptyRepo(ctx, owner, repo, bootstrapBranch)
 			if err != nil {
 				return fmt.Errorf("failed to initialize empty repo: %w", err)
+			}
+			err = rs.waitForGitDataReady(ctx, owner, repo, bootstrapCommitSHA)
+			if err != nil {
+				return fmt.Errorf("failed waiting for git data API readiness: %w", err)
 			}
 
 			// Phase 2: Upload all blobs via Git Data API (now works)
@@ -611,21 +920,29 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 				return fmt.Errorf("failed to create commit: %w", err)
 			}
 
-			// Phase 5: Force update branch to point to orphan commit
-			// This replaces the bootstrap commit entirely
+			// Phase 5: Force update bootstrap branch to point to orphan commit.
+			// This replaces the bootstrap commit entirely.
 			updateReq := UpdateRefRequest{
 				SHA:   initialCommitResp.SHA,
 				Force: true, // Force required to replace bootstrap commit
 			}
-			err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", branch), updateReq)
+			err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", bootstrapBranch), updateReq)
 			if err != nil {
-				return fmt.Errorf("failed to update branch: %w", err)
+				return fmt.Errorf("failed to update bootstrap branch: %w", err)
+			}
+
+			// If the requested branch is not the bootstrap branch, create it now.
+			if branch != bootstrapBranch {
+				err = rs.client.CreateBranch(ctx, owner, repo, branch, initialCommitResp.SHA)
+				if err != nil {
+					return fmt.Errorf("failed to create branch '%s' from bootstrap branch '%s': %w", branch, bootstrapBranch, err)
+				}
 			}
 
 			fmt.Printf("Successfully uploaded %d files\n", len(files))
 			fmt.Printf("Created commit %s on branch '%s'\n", initialCommitResp.SHA[:7], branch)
 
-			err = rs.updateTimelineWithGitHubSHA(branch, commitHash, initialCommitResp.SHA)
+			err = rs.updateTimelineWithGitHubSHA(localTimelineName, branch, commitHash, initialCommitResp.SHA)
 			if err != nil {
 				logging.Warn("Failed to update timeline with GitHub SHA", "error", err)
 			}
@@ -682,50 +999,23 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 
 	// Skip if the resulting tree is identical to what's already on GitHub
 	if parentTreeSHA != "" && treeResp.SHA == parentTreeSHA {
-		fmt.Printf("Already up to date - no file changes to push\n")
-		return nil
+		if parentSHA != "" {
+			fmt.Printf("Created tree matches remote parent; creating commit to preserve seal history\n")
+		} else {
+			fmt.Printf("Already up to date - no file changes to push\n")
+			return nil
+		}
 	}
 
-	// Create commit on GitHub
-	var parents []string
-	if parentSHA != "" {
-		parents = []string{parentSHA}
-	}
-
-	commitReq := CreateCommitRequest{
-		Message: commitObj.Message,
-		Tree:    treeResp.SHA,
-		Parents: parents,
-	}
-	commitResp, err := rs.client.CreateGitCommit(ctx, owner, repo, commitReq)
+	commitResp, err := rs.createGitCommitOnBranch(ctx, owner, repo, branch, commitObj.Message, treeResp.SHA, parentSHA, force)
 	if err != nil {
-		return fmt.Errorf("failed to create commit: %w", err)
-	}
-
-	// Create or update branch reference to point to new commit
-	if parentSHA == "" {
-		// Empty repository - create the branch reference
-		err = rs.client.CreateBranch(ctx, owner, repo, branch, commitResp.SHA)
-		if err != nil {
-			return fmt.Errorf("failed to create branch reference: %w", err)
-		}
-		fmt.Printf("Created branch '%s' with initial commit\n", branch)
-	} else {
-		// Update existing branch reference
-		updateReq := UpdateRefRequest{
-			SHA:   commitResp.SHA,
-			Force: force, // Use force flag for ref update
-		}
-		err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", branch), updateReq)
-		if err != nil {
-			return fmt.Errorf("failed to update branch: %w", err)
-		}
+		return err
 	}
 
 	fmt.Printf("Successfully pushed commit %s to GitHub\n", commitResp.SHA[:7])
 
 	// Store GitHub commit SHA in timeline for future delta uploads
-	err = rs.updateTimelineWithGitHubSHA(branch, commitHash, commitResp.SHA)
+	err = rs.updateTimelineWithGitHubSHA(localTimelineName, branch, commitHash, commitResp.SHA)
 	if err != nil {
 		// Non-fatal: log but don't fail the push
 		logging.Warn("Failed to update timeline with GitHub SHA", "error", err)
@@ -734,8 +1024,8 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	return nil
 }
 
-// updateTimelineWithGitHubSHA updates the timeline with the GitHub commit SHA
-func (rs *RepoSyncer) updateTimelineWithGitHubSHA(branch string, ivaldiCommitHash cas.Hash, githubCommitSHA string) error {
+// updateTimelineWithGitHubSHA updates local and remote timeline metadata with the latest GitHub SHA.
+func (rs *RepoSyncer) updateTimelineWithGitHubSHA(localTimelineName, remoteBranch string, ivaldiCommitHash cas.Hash, githubCommitSHA string) error {
 	refsManager, err := refs.NewRefsManager(rs.ivaldiDir)
 	if err != nil {
 		return fmt.Errorf("failed to create refs manager: %w", err)
@@ -743,7 +1033,7 @@ func (rs *RepoSyncer) updateTimelineWithGitHubSHA(branch string, ivaldiCommitHas
 	defer refsManager.Close()
 
 	// Get the timeline
-	timeline, err := refsManager.GetTimeline(branch, refs.LocalTimeline)
+	timeline, err := refsManager.GetTimeline(localTimelineName, refs.LocalTimeline)
 	if err != nil {
 		return fmt.Errorf("failed to get timeline: %w", err)
 	}
@@ -761,7 +1051,7 @@ func (rs *RepoSyncer) updateTimelineWithGitHubSHA(branch string, ivaldiCommitHas
 	copy(blake3Hash[:], ivaldiCommitHash[:])
 
 	err = refsManager.UpdateTimeline(
-		branch,
+		localTimelineName,
 		refs.LocalTimeline,
 		blake3Hash,
 		timeline.SHA256Hash,
@@ -769,6 +1059,21 @@ func (rs *RepoSyncer) updateTimelineWithGitHubSHA(branch string, ivaldiCommitHas
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update timeline: %w", err)
+	}
+
+	// Keep the corresponding remote timeline reference in sync after successful pushes.
+	remoteTimeline, err := refsManager.GetTimeline(remoteBranch, refs.RemoteTimeline)
+	if err == nil {
+		_ = refsManager.UpdateRemoteTimeline(remoteBranch, blake3Hash, remoteTimeline.SHA256Hash, githubCommitSHA)
+	} else {
+		_ = refsManager.CreateTimeline(
+			remoteBranch,
+			refs.RemoteTimeline,
+			blake3Hash,
+			[32]byte{},
+			githubCommitSHA,
+			fmt.Sprintf("Remote branch from upload (%s)", remoteBranch),
+		)
 	}
 
 	return nil

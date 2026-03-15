@@ -145,7 +145,7 @@ type GitTreeEntry struct {
 	Path    string  `json:"path"`
 	Mode    string  `json:"mode"`
 	Type    string  `json:"type"`
-	SHA     *string `json:"sha,omitempty"`
+	SHA     *string `json:"sha"`
 	Content *string `json:"content,omitempty"`
 }
 
