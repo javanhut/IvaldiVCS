@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/commit"
@@ -273,6 +274,12 @@ type blobUploadResult struct {
 	sha  string
 	err  error
 }
+
+const (
+	bootstrapGitDataReadyTimeout = 10 * time.Second
+	bootstrapGitDataInitialRetry = 150 * time.Millisecond
+	bootstrapGitDataMaxRetry     = 1 * time.Second
+)
 
 func changeTypeOrder(changeType string) int {
 	switch changeType {
@@ -552,6 +559,91 @@ func (rs *RepoSyncer) bootstrapEmptyRepo(ctx context.Context, owner, repo, branc
 	return uploadResp.Commit.SHA, nil
 }
 
+// waitForGitDataReady waits until Git Data API endpoints become usable after bootstrapping
+// an empty repository through the Contents API.
+func (rs *RepoSyncer) waitForGitDataReady(ctx context.Context, owner, repo, bootstrapCommitSHA string) error {
+	if bootstrapCommitSHA == "" {
+		return fmt.Errorf("bootstrap commit SHA is empty")
+	}
+
+	deadline := time.Now().Add(bootstrapGitDataReadyTimeout)
+	delay := bootstrapGitDataInitialRetry
+	var lastErr error
+
+	for {
+		_, err := rs.client.GetCommit(ctx, owner, repo, bootstrapCommitSHA)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if time.Now().After(deadline) {
+			break
+		}
+
+		sleepFor := delay
+		remaining := time.Until(deadline)
+		if sleepFor > remaining {
+			sleepFor = remaining
+		}
+		if sleepFor <= 0 {
+			break
+		}
+
+		timer := time.NewTimer(sleepFor)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("bootstrap readiness wait cancelled: %w", ctx.Err())
+		case <-timer.C:
+		}
+
+		delay *= 2
+		if delay > bootstrapGitDataMaxRetry {
+			delay = bootstrapGitDataMaxRetry
+		}
+	}
+
+	return fmt.Errorf("git data API was not ready after bootstrap commit %s: %w", bootstrapCommitSHA, lastErr)
+}
+
+// createGitCommitOnBranch creates a commit with the provided tree and updates the target branch.
+func (rs *RepoSyncer) createGitCommitOnBranch(ctx context.Context, owner, repo, branch, message, treeSHA, parentSHA string, force bool) (*CommitResponse, error) {
+	var parents []string
+	if parentSHA != "" {
+		parents = []string{parentSHA}
+	}
+
+	commitReq := CreateCommitRequest{
+		Message: message,
+		Tree:    treeSHA,
+		Parents: parents,
+	}
+	commitResp, err := rs.client.CreateGitCommit(ctx, owner, repo, commitReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create commit: %w", err)
+	}
+
+	if parentSHA == "" {
+		err = rs.client.CreateBranch(ctx, owner, repo, branch, commitResp.SHA)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create branch reference: %w", err)
+		}
+		fmt.Printf("Created branch '%s' with initial commit\n", branch)
+	} else {
+		updateReq := UpdateRefRequest{
+			SHA:   commitResp.SHA,
+			Force: force,
+		}
+		err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", branch), updateReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update branch: %w", err)
+		}
+	}
+
+	return commitResp, nil
+}
+
 // UploadFile uploads a file to GitHub
 func (rs *RepoSyncer) UploadFile(ctx context.Context, owner, repo, path, branch, message string) error {
 	// Read file content
@@ -673,6 +765,7 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 	// Determine if we should use delta upload
 	var treeEntries []GitTreeEntry
 	var useDeltaUpload bool
+	var sameTreeCommit bool
 
 	// Try to get parent commit hash from Ivaldi
 	var parentCommitHash cas.Hash
@@ -690,8 +783,9 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 			logging.Warn("Failed to compute deltas, falling back to full upload", "error", err)
 			useDeltaUpload = false
 		} else if len(changes) == 0 {
-			fmt.Printf("No file changes detected\n")
-			return nil
+			fmt.Printf("No file deltas detected against local parent\n")
+			sameTreeCommit = true
+			useDeltaUpload = false
 		} else {
 			sortFileChanges(changes)
 			printFileChanges(changes)
@@ -710,8 +804,8 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 		if err != nil {
 			logging.Warn("Failed remote-tree delta comparison, falling back to full upload", "error", err)
 		} else if len(changes) == 0 {
-			fmt.Printf("No file changes detected\n")
-			return nil
+			fmt.Printf("No file deltas detected against remote tree\n")
+			sameTreeCommit = true
 		} else {
 			fmt.Printf("Using remote-tree delta fallback\n")
 			printFileChanges(changes)
@@ -721,6 +815,25 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 			}
 			useDeltaUpload = true
 		}
+	}
+
+	if sameTreeCommit {
+		if parentSHA == "" || parentTreeSHA == "" {
+			return fmt.Errorf("cannot create same-tree commit without remote parent context")
+		}
+
+		fmt.Printf("No file deltas; creating commit with unchanged tree to preserve seal history\n")
+		commitResp, err := rs.createGitCommitOnBranch(ctx, owner, repo, branch, commitObj.Message, parentTreeSHA, parentSHA, force)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Successfully pushed commit %s to GitHub\n", commitResp.SHA[:7])
+		err = rs.updateTimelineWithGitHubSHA(localTimelineName, branch, commitHash, commitResp.SHA)
+		if err != nil {
+			logging.Warn("Failed to update timeline with GitHub SHA", "error", err)
+		}
+		return nil
 	}
 
 	// Fallback to full upload if delta upload is not available
@@ -750,9 +863,13 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 
 			// Phase 1: Bootstrap - create temp commit so Git Data API works
 			fmt.Printf("Initializing repository (bootstrap branch: '%s')...\n", bootstrapBranch)
-			_, err := rs.bootstrapEmptyRepo(ctx, owner, repo, bootstrapBranch)
+			bootstrapCommitSHA, err := rs.bootstrapEmptyRepo(ctx, owner, repo, bootstrapBranch)
 			if err != nil {
 				return fmt.Errorf("failed to initialize empty repo: %w", err)
+			}
+			err = rs.waitForGitDataReady(ctx, owner, repo, bootstrapCommitSHA)
+			if err != nil {
+				return fmt.Errorf("failed waiting for git data API readiness: %w", err)
 			}
 
 			// Phase 2: Upload all blobs via Git Data API (now works)
@@ -882,44 +999,17 @@ func (rs *RepoSyncer) PushCommit(ctx context.Context, owner, repo, branch string
 
 	// Skip if the resulting tree is identical to what's already on GitHub
 	if parentTreeSHA != "" && treeResp.SHA == parentTreeSHA {
-		fmt.Printf("Already up to date - no file changes to push\n")
-		return nil
+		if parentSHA != "" {
+			fmt.Printf("Created tree matches remote parent; creating commit to preserve seal history\n")
+		} else {
+			fmt.Printf("Already up to date - no file changes to push\n")
+			return nil
+		}
 	}
 
-	// Create commit on GitHub
-	var parents []string
-	if parentSHA != "" {
-		parents = []string{parentSHA}
-	}
-
-	commitReq := CreateCommitRequest{
-		Message: commitObj.Message,
-		Tree:    treeResp.SHA,
-		Parents: parents,
-	}
-	commitResp, err := rs.client.CreateGitCommit(ctx, owner, repo, commitReq)
+	commitResp, err := rs.createGitCommitOnBranch(ctx, owner, repo, branch, commitObj.Message, treeResp.SHA, parentSHA, force)
 	if err != nil {
-		return fmt.Errorf("failed to create commit: %w", err)
-	}
-
-	// Create or update branch reference to point to new commit
-	if parentSHA == "" {
-		// Empty repository - create the branch reference
-		err = rs.client.CreateBranch(ctx, owner, repo, branch, commitResp.SHA)
-		if err != nil {
-			return fmt.Errorf("failed to create branch reference: %w", err)
-		}
-		fmt.Printf("Created branch '%s' with initial commit\n", branch)
-	} else {
-		// Update existing branch reference
-		updateReq := UpdateRefRequest{
-			SHA:   commitResp.SHA,
-			Force: force, // Use force flag for ref update
-		}
-		err = rs.client.UpdateRef(ctx, owner, repo, fmt.Sprintf("heads/%s", branch), updateReq)
-		if err != nil {
-			return fmt.Errorf("failed to update branch: %w", err)
-		}
+		return err
 	}
 
 	fmt.Printf("Successfully pushed commit %s to GitHub\n", commitResp.SHA[:7])
