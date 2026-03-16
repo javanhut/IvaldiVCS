@@ -746,6 +746,372 @@ func TestSplitPath(t *testing.T) {
 	}
 }
 
+// createNamedTestFiles creates workspace files from a path→content map.
+func createNamedTestFiles(casStore cas.CAS, files map[string]string) []wsindex.FileMetadata {
+	fileBuilder := filechunk.NewBuilder(casStore, filechunk.DefaultParams())
+	var result []wsindex.FileMetadata
+
+	for path, content := range files {
+		contentBytes := []byte(content)
+		fileRef, err := fileBuilder.Build(contentBytes)
+		if err != nil {
+			panic(err)
+		}
+		result = append(result, wsindex.FileMetadata{
+			Path:     path,
+			FileRef:  fileRef,
+			ModTime:  time.Unix(1640995200, 0),
+			Mode:     0644,
+			Size:     int64(len(contentBytes)),
+			Checksum: cas.SumB3(contentBytes),
+		})
+	}
+	return result
+}
+
+// mergeParentAndStaged simulates the merge logic from cli/seal.go:
+// parent files are included unless overridden by a staged file at the same path.
+func mergeParentAndStaged(parentFiles, stagedFiles []wsindex.FileMetadata) []wsindex.FileMetadata {
+	stagedPathSet := make(map[string]bool, len(stagedFiles))
+	for _, f := range stagedFiles {
+		stagedPathSet[f.Path] = true
+	}
+	merged := append([]wsindex.FileMetadata{}, stagedFiles...)
+	for _, pf := range parentFiles {
+		if !stagedPathSet[pf.Path] {
+			merged = append(merged, pf)
+		}
+	}
+	return merged
+}
+
+// TestSnapshotMerge_NewFilePreservesParentFiles verifies that when a new file
+// is staged on top of a parent commit, the resulting commit tree contains both
+// the parent's files and the new file. This is the core regression test for the
+// bug where upload deleted files from previous commits.
+func TestSnapshotMerge_NewFilePreservesParentFiles(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// First commit: 3 files
+	initialFiles := createNamedTestFiles(casStore, map[string]string{
+		"README.md":   "# Project",
+		"src/main.go": "package main",
+		"src/util.go": "package main\nfunc helper() {}",
+	})
+	commit1, err := builder.CreateCommit(initialFiles, nil, "A", "A", "Initial commit")
+	if err != nil {
+		t.Fatalf("CreateCommit 1 failed: %v", err)
+	}
+	commit1Hash := builder.GetCommitHash(commit1)
+
+	// Read parent tree to get file metadata (simulates what seal.go does)
+	parentTree, err := reader.ReadTree(commit1)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+	parentFiles, err := reader.TreeToFileMetadata(parentTree)
+	if err != nil {
+		t.Fatalf("TreeToFileMetadata failed: %v", err)
+	}
+
+	// Second commit: only 1 new staged file
+	stagedFiles := createNamedTestFiles(casStore, map[string]string{
+		"docs/guide.md": "# Guide",
+	})
+
+	// Merge parent + staged (the fix logic)
+	allFiles := mergeParentAndStaged(parentFiles, stagedFiles)
+
+	commit2, err := builder.CreateCommit(allFiles, []cas.Hash{commit1Hash}, "A", "A", "Add guide")
+	if err != nil {
+		t.Fatalf("CreateCommit 2 failed: %v", err)
+	}
+
+	// Verify commit2's tree has ALL 4 files
+	tree2, err := reader.ReadTree(commit2)
+	if err != nil {
+		t.Fatalf("ReadTree commit2 failed: %v", err)
+	}
+	fileList, err := reader.ListFiles(tree2)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+
+	expectedFiles := map[string]bool{
+		"README.md":     true,
+		"src/main.go":   true,
+		"src/util.go":   true,
+		"docs/guide.md": true,
+	}
+
+	if len(fileList) != len(expectedFiles) {
+		t.Fatalf("Expected %d files, got %d: %v", len(expectedFiles), len(fileList), fileList)
+	}
+	for _, f := range fileList {
+		if !expectedFiles[f] {
+			t.Errorf("Unexpected file in commit tree: %s", f)
+		}
+	}
+}
+
+// TestSnapshotMerge_UpdatedFileTakesPrecedence verifies that when a staged file
+// has the same path as a parent file, the staged version wins.
+func TestSnapshotMerge_UpdatedFileTakesPrecedence(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// First commit
+	initialFiles := createNamedTestFiles(casStore, map[string]string{
+		"README.md":   "# Project v1",
+		"src/main.go": "package main\nfunc main() {}",
+	})
+	commit1, err := builder.CreateCommit(initialFiles, nil, "A", "A", "Initial")
+	if err != nil {
+		t.Fatalf("CreateCommit 1 failed: %v", err)
+	}
+	commit1Hash := builder.GetCommitHash(commit1)
+
+	parentTree, err := reader.ReadTree(commit1)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+	parentFiles, err := reader.TreeToFileMetadata(parentTree)
+	if err != nil {
+		t.Fatalf("TreeToFileMetadata failed: %v", err)
+	}
+
+	// Second commit: update README.md with new content
+	stagedFiles := createNamedTestFiles(casStore, map[string]string{
+		"README.md": "# Project v2 - Updated",
+	})
+
+	allFiles := mergeParentAndStaged(parentFiles, stagedFiles)
+
+	commit2, err := builder.CreateCommit(allFiles, []cas.Hash{commit1Hash}, "A", "A", "Update README")
+	if err != nil {
+		t.Fatalf("CreateCommit 2 failed: %v", err)
+	}
+
+	// Verify commit2 has both files
+	tree2, err := reader.ReadTree(commit2)
+	if err != nil {
+		t.Fatalf("ReadTree commit2 failed: %v", err)
+	}
+	fileList, err := reader.ListFiles(tree2)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+	if len(fileList) != 2 {
+		t.Fatalf("Expected 2 files, got %d: %v", len(fileList), fileList)
+	}
+
+	// Verify README.md has the updated content, not the original
+	content, err := reader.GetFileContent(tree2, "README.md")
+	if err != nil {
+		t.Fatalf("GetFileContent failed: %v", err)
+	}
+	if string(content) != "# Project v2 - Updated" {
+		t.Errorf("Expected updated README content, got: %q", string(content))
+	}
+}
+
+// TestSnapshotMerge_WithoutMerge_LosesParentFiles demonstrates that without
+// the merge step, a commit with only staged files would lose parent files.
+// This documents the bug behavior to prevent regressions.
+func TestSnapshotMerge_WithoutMerge_LosesParentFiles(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// First commit: 3 files
+	initialFiles := createNamedTestFiles(casStore, map[string]string{
+		"file1.txt": "content1",
+		"file2.txt": "content2",
+		"file3.txt": "content3",
+	})
+	commit1, err := builder.CreateCommit(initialFiles, nil, "A", "A", "Initial")
+	if err != nil {
+		t.Fatalf("CreateCommit 1 failed: %v", err)
+	}
+	commit1Hash := builder.GetCommitHash(commit1)
+
+	// Create commit2 with ONLY the new file (no merge — the buggy behavior)
+	onlyNewFile := createNamedTestFiles(casStore, map[string]string{
+		"file4.txt": "content4",
+	})
+	buggyCommit, err := builder.CreateCommit(onlyNewFile, []cas.Hash{commit1Hash}, "A", "A", "Add file4 (buggy)")
+	if err != nil {
+		t.Fatalf("CreateCommit buggy failed: %v", err)
+	}
+
+	buggyTree, err := reader.ReadTree(buggyCommit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+	buggyFiles, err := reader.ListFiles(buggyTree)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+
+	// Without merge, commit2 only has 1 file — the bug
+	if len(buggyFiles) != 1 {
+		t.Fatalf("Expected buggy commit to have 1 file (demonstrating the bug), got %d", len(buggyFiles))
+	}
+
+	// Now do it correctly with merge
+	parentTree, _ := reader.ReadTree(commit1)
+	parentFiles, _ := reader.TreeToFileMetadata(parentTree)
+	allFiles := mergeParentAndStaged(parentFiles, onlyNewFile)
+
+	fixedCommit, err := builder.CreateCommit(allFiles, []cas.Hash{commit1Hash}, "A", "A", "Add file4 (fixed)")
+	if err != nil {
+		t.Fatalf("CreateCommit fixed failed: %v", err)
+	}
+
+	fixedTree, err := reader.ReadTree(fixedCommit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+	fixedFiles, err := reader.ListFiles(fixedTree)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+
+	// With merge, commit2 has all 4 files
+	if len(fixedFiles) != 4 {
+		t.Fatalf("Expected fixed commit to have 4 files, got %d: %v", len(fixedFiles), fixedFiles)
+	}
+}
+
+// TestSnapshotMerge_ThreeCommitsChained verifies the merge works across a chain
+// of 3 commits, each adding one new file. The final commit should have all files.
+func TestSnapshotMerge_ThreeCommitsChained(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Commit 1: 2 files
+	files1 := createNamedTestFiles(casStore, map[string]string{
+		"a.txt": "aaa",
+		"b.txt": "bbb",
+	})
+	c1, err := builder.CreateCommit(files1, nil, "A", "A", "Commit 1")
+	if err != nil {
+		t.Fatalf("Commit 1 failed: %v", err)
+	}
+	c1Hash := builder.GetCommitHash(c1)
+
+	// Commit 2: add c.txt, merge with parent
+	parentTree1, _ := reader.ReadTree(c1)
+	parentFiles1, _ := reader.TreeToFileMetadata(parentTree1)
+	staged2 := createNamedTestFiles(casStore, map[string]string{"c.txt": "ccc"})
+	all2 := mergeParentAndStaged(parentFiles1, staged2)
+
+	c2, err := builder.CreateCommit(all2, []cas.Hash{c1Hash}, "A", "A", "Commit 2")
+	if err != nil {
+		t.Fatalf("Commit 2 failed: %v", err)
+	}
+	c2Hash := builder.GetCommitHash(c2)
+
+	// Commit 3: add d.txt, merge with parent
+	parentTree2, _ := reader.ReadTree(c2)
+	parentFiles2, _ := reader.TreeToFileMetadata(parentTree2)
+	staged3 := createNamedTestFiles(casStore, map[string]string{"d.txt": "ddd"})
+	all3 := mergeParentAndStaged(parentFiles2, staged3)
+
+	c3, err := builder.CreateCommit(all3, []cas.Hash{c2Hash}, "A", "A", "Commit 3")
+	if err != nil {
+		t.Fatalf("Commit 3 failed: %v", err)
+	}
+
+	// Verify final commit has all 4 files
+	tree3, err := reader.ReadTree(c3)
+	if err != nil {
+		t.Fatalf("ReadTree commit3 failed: %v", err)
+	}
+	fileList, err := reader.ListFiles(tree3)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+
+	expected := map[string]bool{"a.txt": true, "b.txt": true, "c.txt": true, "d.txt": true}
+	if len(fileList) != len(expected) {
+		t.Fatalf("Expected %d files, got %d: %v", len(expected), len(fileList), fileList)
+	}
+	for _, f := range fileList {
+		if !expected[f] {
+			t.Errorf("Unexpected file: %s", f)
+		}
+	}
+}
+
+// TestSnapshotMerge_SubdirectoryFiles verifies merge works correctly when
+// parent and staged files are in nested directories.
+func TestSnapshotMerge_SubdirectoryFiles(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Commit 1: files in subdirectories
+	files1 := createNamedTestFiles(casStore, map[string]string{
+		"src/main.go":      "package main",
+		"src/lib/helper.go": "package lib",
+		"docs/readme.md":   "# Docs",
+	})
+	c1, err := builder.CreateCommit(files1, nil, "A", "A", "Initial")
+	if err != nil {
+		t.Fatalf("Commit 1 failed: %v", err)
+	}
+	c1Hash := builder.GetCommitHash(c1)
+
+	// Commit 2: add file in existing subdir and a new subdir
+	parentTree, _ := reader.ReadTree(c1)
+	parentFiles, _ := reader.TreeToFileMetadata(parentTree)
+	staged := createNamedTestFiles(casStore, map[string]string{
+		"src/lib/utils.go": "package lib\nfunc util() {}",
+		"test/main_test.go": "package test",
+	})
+	allFiles := mergeParentAndStaged(parentFiles, staged)
+
+	c2, err := builder.CreateCommit(allFiles, []cas.Hash{c1Hash}, "A", "A", "Add more")
+	if err != nil {
+		t.Fatalf("Commit 2 failed: %v", err)
+	}
+
+	tree2, err := reader.ReadTree(c2)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+	fileList, err := reader.ListFiles(tree2)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+
+	expected := map[string]bool{
+		"src/main.go":       true,
+		"src/lib/helper.go": true,
+		"src/lib/utils.go":  true,
+		"docs/readme.md":    true,
+		"test/main_test.go": true,
+	}
+	if len(fileList) != len(expected) {
+		t.Fatalf("Expected %d files, got %d: %v", len(expected), len(fileList), fileList)
+	}
+	for _, f := range fileList {
+		if !expected[f] {
+			t.Errorf("Unexpected file: %s", f)
+		}
+	}
+}
+
 func BenchmarkCreateCommit(b *testing.B) {
 	casStore := cas.NewMemoryCAS()
 	mmr := history.NewMMR()

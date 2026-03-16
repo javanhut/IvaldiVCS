@@ -1,6 +1,9 @@
 package diffmerge
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -535,5 +538,725 @@ func TestDetectRenames(t *testing.T) {
 	}
 	if rename.Similarity != 1.0 {
 		t.Errorf("Expected similarity 1.0, got %f", rename.Similarity)
+	}
+}
+
+// --- Additional three-way merge scenario tests ---
+
+func TestMerge_AddedOnBothSides_SameContent(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	merger := NewMerger(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	baseIndex, _ := wsBuilder.Build(nil)
+
+	sameFile := createTestFileMetadata("newfile.txt", "same content")
+	leftIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{sameFile})
+	rightIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{sameFile})
+
+	result, err := merger.MergeWorkspaces(baseIndex, leftIndex, rightIndex)
+	if err != nil {
+		t.Fatalf("MergeWorkspaces failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success when both sides add identical file")
+	}
+
+	loader := wsindex.NewLoader(casStore)
+	files, _ := loader.ListAll(*result.MergedIndex)
+	if len(files) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(files))
+	}
+	if files[0].Path != "newfile.txt" {
+		t.Errorf("Expected newfile.txt, got %s", files[0].Path)
+	}
+}
+
+func TestMerge_AddedOnBothSides_DifferentContent(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	merger := NewMerger(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	baseIndex, _ := wsBuilder.Build(nil)
+
+	leftFile := createTestFileMetadata("conflict.txt", "left version")
+	rightFile := createTestFileMetadata("conflict.txt", "right version")
+	leftIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{leftFile})
+	rightIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{rightFile})
+
+	result, err := merger.MergeWorkspaces(baseIndex, leftIndex, rightIndex)
+	if err != nil {
+		t.Fatalf("MergeWorkspaces failed: %v", err)
+	}
+	if result.Success {
+		t.Fatal("Expected conflict when both sides add different content")
+	}
+	if len(result.Conflicts) != 1 {
+		t.Fatalf("Expected 1 conflict, got %d", len(result.Conflicts))
+	}
+	if result.Conflicts[0].Path != "conflict.txt" {
+		t.Errorf("Expected conflict on conflict.txt, got %s", result.Conflicts[0].Path)
+	}
+}
+
+func TestMerge_DeletedOnBothSides(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	merger := NewMerger(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	baseFile := createTestFileMetadata("todelete.txt", "content")
+	baseIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{baseFile})
+	emptyIndex, _ := wsBuilder.Build(nil)
+
+	result, err := merger.MergeWorkspaces(baseIndex, emptyIndex, emptyIndex)
+	if err != nil {
+		t.Fatalf("MergeWorkspaces failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success when both sides delete")
+	}
+
+	loader := wsindex.NewLoader(casStore)
+	files, _ := loader.ListAll(*result.MergedIndex)
+	if len(files) != 0 {
+		t.Errorf("Expected 0 files, got %d", len(files))
+	}
+}
+
+func TestMerge_ModifiedLeftDeletedRight(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	merger := NewMerger(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	baseFile := createTestFileMetadata("file.txt", "base")
+	modifiedFile := createTestFileMetadata("file.txt", "modified on left")
+	baseIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{baseFile})
+	leftIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{modifiedFile})
+	rightIndex, _ := wsBuilder.Build(nil) // deleted on right
+
+	result, err := merger.MergeWorkspaces(baseIndex, leftIndex, rightIndex)
+	if err != nil {
+		t.Fatalf("MergeWorkspaces failed: %v", err)
+	}
+	if result.Success {
+		t.Fatal("Expected conflict: modified on left, deleted on right")
+	}
+	if len(result.Conflicts) != 1 {
+		t.Fatalf("Expected 1 conflict, got %d", len(result.Conflicts))
+	}
+}
+
+func TestMerge_DeletedLeftModifiedRight(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	merger := NewMerger(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	baseFile := createTestFileMetadata("file.txt", "base")
+	modifiedFile := createTestFileMetadata("file.txt", "modified on right")
+	baseIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{baseFile})
+	leftIndex, _ := wsBuilder.Build(nil) // deleted on left
+	rightIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{modifiedFile})
+
+	result, err := merger.MergeWorkspaces(baseIndex, leftIndex, rightIndex)
+	if err != nil {
+		t.Fatalf("MergeWorkspaces failed: %v", err)
+	}
+	if result.Success {
+		t.Fatal("Expected conflict: deleted on left, modified on right")
+	}
+}
+
+func TestMerge_UnchangedLeftModifiedRight(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	merger := NewMerger(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	baseFile := createTestFileMetadata("file.txt", "base content")
+	modifiedFile := createTestFileMetadata("file.txt", "right changed this")
+	baseIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{baseFile})
+	leftIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{baseFile})      // unchanged
+	rightIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{modifiedFile}) // modified
+
+	result, err := merger.MergeWorkspaces(baseIndex, leftIndex, rightIndex)
+	if err != nil {
+		t.Fatalf("MergeWorkspaces failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success: only right modified")
+	}
+
+	loader := wsindex.NewLoader(casStore)
+	files, _ := loader.ListAll(*result.MergedIndex)
+	if len(files) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(files))
+	}
+	if files[0].FileRef.Hash != modifiedFile.FileRef.Hash {
+		t.Error("Expected right's version to be taken")
+	}
+}
+
+func TestMerge_ModifiedLeftUnchangedRight(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	merger := NewMerger(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	baseFile := createTestFileMetadata("file.txt", "base content")
+	modifiedFile := createTestFileMetadata("file.txt", "left changed this")
+	baseIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{baseFile})
+	leftIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{modifiedFile}) // modified
+	rightIndex, _ := wsBuilder.Build([]wsindex.FileMetadata{baseFile})   // unchanged
+
+	result, err := merger.MergeWorkspaces(baseIndex, leftIndex, rightIndex)
+	if err != nil {
+		t.Fatalf("MergeWorkspaces failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success: only left modified")
+	}
+
+	loader := wsindex.NewLoader(casStore)
+	files, _ := loader.ListAll(*result.MergedIndex)
+	if len(files) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(files))
+	}
+	if files[0].FileRef.Hash != modifiedFile.FileRef.Hash {
+		t.Error("Expected left's version to be taken")
+	}
+}
+
+func TestDiffWorkspaces_EmptyToFull(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	differ := NewDiffer(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	emptyIndex, _ := wsBuilder.Build(nil)
+	files := []wsindex.FileMetadata{
+		createTestFileMetadata("a.txt", "aaa"),
+		createTestFileMetadata("b.txt", "bbb"),
+	}
+	fullIndex, _ := wsBuilder.Build(files)
+
+	diff, err := differ.DiffWorkspaces(emptyIndex, fullIndex)
+	if err != nil {
+		t.Fatalf("DiffWorkspaces failed: %v", err)
+	}
+
+	if len(diff.FileChanges) != 2 {
+		t.Fatalf("Expected 2 changes, got %d", len(diff.FileChanges))
+	}
+	for _, change := range diff.FileChanges {
+		if change.Type != Added {
+			t.Errorf("Expected Added, got %v for %s", change.Type, change.Path)
+		}
+	}
+}
+
+func TestDiffWorkspaces_FullToEmpty(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	differ := NewDiffer(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	files := []wsindex.FileMetadata{
+		createTestFileMetadata("a.txt", "aaa"),
+		createTestFileMetadata("b.txt", "bbb"),
+	}
+	fullIndex, _ := wsBuilder.Build(files)
+	emptyIndex, _ := wsBuilder.Build(nil)
+
+	diff, err := differ.DiffWorkspaces(fullIndex, emptyIndex)
+	if err != nil {
+		t.Fatalf("DiffWorkspaces failed: %v", err)
+	}
+
+	if len(diff.FileChanges) != 2 {
+		t.Fatalf("Expected 2 changes, got %d", len(diff.FileChanges))
+	}
+	for _, change := range diff.FileChanges {
+		if change.Type != Removed {
+			t.Errorf("Expected Removed, got %v for %s", change.Type, change.Path)
+		}
+	}
+}
+
+func TestDiffWorkspaces_NoChanges(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	differ := NewDiffer(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	files := []wsindex.FileMetadata{
+		createTestFileMetadata("same.txt", "unchanged"),
+	}
+	index1, _ := wsBuilder.Build(files)
+	index2, _ := wsBuilder.Build(files)
+
+	diff, err := differ.DiffWorkspaces(index1, index2)
+	if err != nil {
+		t.Fatalf("DiffWorkspaces failed: %v", err)
+	}
+	if len(diff.FileChanges) != 0 {
+		t.Errorf("Expected 0 changes for identical workspaces, got %d", len(diff.FileChanges))
+	}
+}
+
+func TestDetectRenames_NoRenames(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	analyzer := NewAnalyzer(casStore)
+
+	oldFile := createTestFileMetadata("old.txt", "old content")
+	newFile := createTestFileMetadata("new.txt", "completely different content")
+
+	diff := &WorkspaceDiff{
+		FileChanges: []FileChange{
+			{Type: Removed, Path: "old.txt", OldFile: &oldFile},
+			{Type: Added, Path: "new.txt", NewFile: &newFile},
+		},
+	}
+
+	renames := analyzer.DetectRenames(diff, 0.8)
+	if len(renames) != 0 {
+		t.Errorf("Expected 0 renames, got %d", len(renames))
+	}
+}
+
+func TestAnalyzer_GetConflictSummary(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	analyzer := NewAnalyzer(casStore)
+
+	conflicts := []Conflict{
+		{Type: FileFileConflict, Path: "src/main.go"},
+		{Type: FileFileConflict, Path: "README.md"},
+		{Type: FileDirectoryConflict, Path: "lib"},
+	}
+
+	summary := analyzer.GetConflictSummary(conflicts)
+
+	byType := summary["by_type"].(map[string]int)
+	if byType["total"] != 3 {
+		t.Errorf("Expected 3 total conflicts, got %d", byType["total"])
+	}
+	if byType["file_file"] != 2 {
+		t.Errorf("Expected 2 file-file conflicts, got %d", byType["file_file"])
+	}
+	if byType["file_directory"] != 1 {
+		t.Errorf("Expected 1 file-directory conflict, got %d", byType["file_directory"])
+	}
+
+	paths := summary["paths"].([]string)
+	if len(paths) != 3 {
+		t.Errorf("Expected 3 conflict paths, got %d", len(paths))
+	}
+}
+
+// --- Resolution storage tests ---
+
+func TestResolutionStorage_SaveAndLoad(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "diffmerge-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewResolutionStorage(tmpDir)
+
+	resolution := CreateResolution("feature", "main", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	resolution.Status = "in_progress"
+
+	err = storage.Save(resolution)
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := storage.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("Expected loaded resolution, got nil")
+	}
+	if loaded.SourceTimeline != "feature" {
+		t.Errorf("Expected source 'feature', got %q", loaded.SourceTimeline)
+	}
+	if loaded.TargetTimeline != "main" {
+		t.Errorf("Expected target 'main', got %q", loaded.TargetTimeline)
+	}
+	if loaded.Status != "in_progress" {
+		t.Errorf("Expected status 'in_progress', got %q", loaded.Status)
+	}
+}
+
+func TestResolutionStorage_LoadNoFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "diffmerge-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewResolutionStorage(tmpDir)
+	loaded, err := storage.Load()
+	if err != nil {
+		t.Fatalf("Load should not fail for missing file: %v", err)
+	}
+	if loaded != nil {
+		t.Error("Expected nil when no resolution exists")
+	}
+}
+
+func TestResolutionStorage_DeleteAndExists(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "diffmerge-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewResolutionStorage(tmpDir)
+
+	resolution := CreateResolution("a", "b", cas.Hash{}, cas.Hash{}, StrategyOurs)
+	storage.Save(resolution)
+
+	if !storage.Exists() {
+		t.Error("Expected resolution to exist after save")
+	}
+
+	err = storage.Delete()
+	if err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if storage.Exists() {
+		t.Error("Expected resolution to not exist after delete")
+	}
+
+	// Delete again should not error
+	err = storage.Delete()
+	if err != nil {
+		t.Fatalf("Double delete should not fail: %v", err)
+	}
+}
+
+func TestMergeResolution_StatusTransitions(t *testing.T) {
+	res := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+
+	if res.Status != "in_progress" {
+		t.Errorf("Expected initial status 'in_progress', got %q", res.Status)
+	}
+	if res.CompletedAt != nil {
+		t.Error("Expected nil CompletedAt initially")
+	}
+
+	res.MarkCompleted()
+	if res.Status != "resolved" {
+		t.Errorf("Expected status 'resolved', got %q", res.Status)
+	}
+	if res.CompletedAt == nil {
+		t.Error("Expected CompletedAt to be set")
+	}
+
+	res2 := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	res2.MarkAborted()
+	if res2.Status != "aborted" {
+		t.Errorf("Expected status 'aborted', got %q", res2.Status)
+	}
+}
+
+func TestMergeResolution_IsFullyResolved(t *testing.T) {
+	res := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+
+	// No files = fully resolved
+	if !res.IsFullyResolved() {
+		t.Error("Expected empty resolution to be fully resolved")
+	}
+
+	// Add resolved file
+	res.Files["a.txt"] = &FileResolution{Path: "a.txt", Resolved: true}
+	if !res.IsFullyResolved() {
+		t.Error("Expected fully resolved with one resolved file")
+	}
+
+	// Add unresolved file
+	res.Files["b.txt"] = &FileResolution{Path: "b.txt", Resolved: false}
+	if res.IsFullyResolved() {
+		t.Error("Expected NOT fully resolved with one unresolved file")
+	}
+}
+
+func TestMergeResolution_GetUnresolvedFiles(t *testing.T) {
+	res := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	res.Files["resolved.txt"] = &FileResolution{Path: "resolved.txt", Resolved: true}
+	res.Files["conflict1.txt"] = &FileResolution{Path: "conflict1.txt", Resolved: false}
+	res.Files["conflict2.txt"] = &FileResolution{Path: "conflict2.txt", Resolved: false}
+
+	unresolved := res.GetUnresolvedFiles()
+	if len(unresolved) != 2 {
+		t.Fatalf("Expected 2 unresolved files, got %d", len(unresolved))
+	}
+}
+
+func TestMergeResolution_GetConflictCount(t *testing.T) {
+	res := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	res.Files["ok.txt"] = &FileResolution{Path: "ok.txt", Resolved: true}
+	res.Files["bad.txt"] = &FileResolution{
+		Path:     "bad.txt",
+		Resolved: false,
+		Chunks: []ChunkResolution{
+			{ChunkIndex: 0, Choice: ChoiceCustom},
+			{ChunkIndex: 1, Choice: ChoiceCustom},
+		},
+	}
+	res.Files["bad2.txt"] = &FileResolution{Path: "bad2.txt", Resolved: false}
+
+	count := res.GetConflictCount()
+	// bad.txt has 2 chunk conflicts, bad2.txt has 0 chunks so counts as 1
+	if count != 3 {
+		t.Errorf("Expected 3 conflict count, got %d", count)
+	}
+}
+
+func TestMergeResolution_Summary(t *testing.T) {
+	res := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	res.Files["a.txt"] = &FileResolution{Path: "a.txt", Resolved: true}
+	res.Files["b.txt"] = &FileResolution{Path: "b.txt", Resolved: true}
+
+	summary := res.Summary()
+	if summary != "All 2 files resolved using auto strategy" {
+		t.Errorf("Unexpected summary: %q", summary)
+	}
+
+	res.Files["c.txt"] = &FileResolution{Path: "c.txt", Resolved: false}
+	summary = res.Summary()
+	if summary == "" {
+		t.Error("Expected non-empty summary")
+	}
+}
+
+func TestResolutionStorage_Exists(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := NewResolutionStorage(tmpDir)
+
+	if storage.Exists() {
+		t.Error("Expected Exists() to return false when no resolution file")
+	}
+
+	resolution := CreateResolution("feature", "main", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	if err := storage.Save(resolution); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if !storage.Exists() {
+		t.Error("Expected Exists() to return true after save")
+	}
+}
+
+func TestResolutionStorage_Delete(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage := NewResolutionStorage(tmpDir)
+
+	resolution := CreateResolution("feature", "main", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	if err := storage.Save(resolution); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	resPath := filepath.Join(tmpDir, "MERGE_RESOLUTION")
+	if _, err := os.Stat(resPath); os.IsNotExist(err) {
+		t.Fatal("Expected MERGE_RESOLUTION file to exist after save")
+	}
+
+	if err := storage.Delete(); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	if _, err := os.Stat(resPath); !os.IsNotExist(err) {
+		t.Error("Expected MERGE_RESOLUTION file to be deleted")
+	}
+
+	// Deleting again should not error
+	if err := storage.Delete(); err != nil {
+		t.Fatalf("Delete of non-existent file should not error: %v", err)
+	}
+}
+
+func TestMergeResolution_MarkCompleted(t *testing.T) {
+	mr := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+
+	mr.MarkCompleted()
+
+	if mr.Status != "resolved" {
+		t.Errorf("Expected status 'resolved', got %s", mr.Status)
+	}
+	if mr.CompletedAt == nil {
+		t.Error("Expected CompletedAt to be set")
+	}
+}
+
+func TestMergeResolution_MarkAborted(t *testing.T) {
+	mr := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+
+	mr.MarkAborted()
+
+	if mr.Status != "aborted" {
+		t.Errorf("Expected status 'aborted', got %s", mr.Status)
+	}
+	if mr.CompletedAt == nil {
+		t.Error("Expected CompletedAt to be set")
+	}
+}
+
+func TestCreateResolution(t *testing.T) {
+	sourceHash := cas.SumB3([]byte("source"))
+	targetHash := cas.SumB3([]byte("target"))
+
+	mr := CreateResolution("feature", "main", sourceHash, targetHash, StrategyTheirs)
+
+	if mr.SourceTimeline != "feature" {
+		t.Errorf("Expected SourceTimeline 'feature', got %s", mr.SourceTimeline)
+	}
+	if mr.TargetTimeline != "main" {
+		t.Errorf("Expected TargetTimeline 'main', got %s", mr.TargetTimeline)
+	}
+	if mr.SourceHash != sourceHash.String() {
+		t.Errorf("Expected SourceHash %s, got %s", sourceHash.String(), mr.SourceHash)
+	}
+	if mr.TargetHash != targetHash.String() {
+		t.Errorf("Expected TargetHash %s, got %s", targetHash.String(), mr.TargetHash)
+	}
+	if mr.Strategy != StrategyTheirs {
+		t.Errorf("Expected strategy 'theirs', got %s", mr.Strategy)
+	}
+	if mr.Status != "in_progress" {
+		t.Errorf("Expected status 'in_progress', got %s", mr.Status)
+	}
+	if mr.Files == nil {
+		t.Error("Expected Files map to be initialized")
+	}
+	if len(mr.Files) != 0 {
+		t.Errorf("Expected 0 files initially, got %d", len(mr.Files))
+	}
+	if mr.CreatedAt.IsZero() {
+		t.Error("Expected CreatedAt to be set")
+	}
+}
+
+func TestCreatePatch_And_CreateFromDiff(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	differ := NewDiffer(casStore)
+	patcher := NewPatcher(casStore)
+	wsBuilder := wsindex.NewBuilder(casStore)
+
+	oldFiles := []wsindex.FileMetadata{
+		createTestFileMetadata("keep.txt", "keep"),
+		createTestFileMetadata("modify.txt", "old"),
+		createTestFileMetadata("remove.txt", "gone"),
+	}
+	oldIndex, err := wsBuilder.Build(oldFiles)
+	if err != nil {
+		t.Fatalf("Build old workspace failed: %v", err)
+	}
+
+	newFiles := []wsindex.FileMetadata{
+		createTestFileMetadata("keep.txt", "keep"),
+		createTestFileMetadata("modify.txt", "new"),
+		createTestFileMetadata("added.txt", "fresh"),
+	}
+	newIndex, err := wsBuilder.Build(newFiles)
+	if err != nil {
+		t.Fatalf("Build new workspace failed: %v", err)
+	}
+
+	diff, err := differ.DiffWorkspaces(oldIndex, newIndex)
+	if err != nil {
+		t.Fatalf("DiffWorkspaces failed: %v", err)
+	}
+
+	patch := patcher.CreatePatch("test patch", diff)
+	if patch.Description != "test patch" {
+		t.Errorf("Expected description 'test patch', got %s", patch.Description)
+	}
+	if len(patch.Changes) != 3 {
+		t.Fatalf("Expected 3 changes in patch, got %d", len(patch.Changes))
+	}
+
+	patchedIndex, err := patcher.ApplyPatch(oldIndex, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch failed: %v", err)
+	}
+
+	loader := wsindex.NewLoader(casStore)
+	patchedFiles, err := loader.ListAll(patchedIndex)
+	if err != nil {
+		t.Fatalf("ListAll failed: %v", err)
+	}
+
+	if len(patchedFiles) != 3 {
+		t.Fatalf("Expected 3 files after patch, got %d", len(patchedFiles))
+	}
+
+	fileMap := make(map[string]wsindex.FileMetadata)
+	for _, f := range patchedFiles {
+		fileMap[f.Path] = f
+	}
+
+	if _, ok := fileMap["keep.txt"]; !ok {
+		t.Error("keep.txt missing after patch")
+	}
+	if f, ok := fileMap["modify.txt"]; !ok {
+		t.Error("modify.txt missing after patch")
+	} else if f.FileRef.Hash != cas.SumB3([]byte("new")) {
+		t.Error("modify.txt should have new content")
+	}
+	if _, ok := fileMap["added.txt"]; !ok {
+		t.Error("added.txt missing after patch")
+	}
+	if _, ok := fileMap["remove.txt"]; ok {
+		t.Error("remove.txt should have been removed")
+	}
+}
+
+func TestDetectRenames_BelowThreshold(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	analyzer := NewAnalyzer(casStore)
+
+	// Different content means different hashes; the implementation only detects
+	// exact hash matches (similarity 1.0), so no renames are found regardless of threshold.
+	oldFile := createTestFileMetadata("old.txt", "content A")
+	newFile := createTestFileMetadata("new.txt", "content B")
+
+	diff := &WorkspaceDiff{
+		FileChanges: []FileChange{
+			{Type: Removed, Path: "old.txt", OldFile: &oldFile},
+			{Type: Added, Path: "new.txt", NewFile: &newFile},
+		},
+	}
+
+	renames := analyzer.DetectRenames(diff, 0.5)
+	if len(renames) != 0 {
+		t.Errorf("Expected 0 renames for different content even with low threshold, got %d", len(renames))
+	}
+}
+
+func TestMergeResolution_Summary_Detailed(t *testing.T) {
+	mr := CreateResolution("src", "dst", cas.Hash{}, cas.Hash{}, StrategyAuto)
+	mr.Files["a.txt"] = &FileResolution{Path: "a.txt", Resolved: true}
+	mr.Files["b.txt"] = &FileResolution{Path: "b.txt", Resolved: true}
+
+	summary := mr.Summary()
+	if !strings.Contains(summary, "All 2 files resolved") {
+		t.Errorf("Expected fully resolved summary, got: %s", summary)
+	}
+	if !strings.Contains(summary, string(StrategyAuto)) {
+		t.Errorf("Expected strategy in summary, got: %s", summary)
+	}
+
+	mr.Files["c.txt"] = &FileResolution{
+		Path:     "c.txt",
+		Resolved: false,
+		Chunks: []ChunkResolution{
+			{ChunkIndex: 0, Choice: ChoiceCustom},
+		},
+	}
+
+	summary = mr.Summary()
+	if !strings.Contains(summary, "2/3 files resolved") {
+		t.Errorf("Expected partial summary, got: %s", summary)
+	}
+	if !strings.Contains(summary, "1 conflicts remaining") {
+		t.Errorf("Expected conflict count in summary, got: %s", summary)
 	}
 }

@@ -2,9 +2,13 @@ package history
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 )
 
 func TestLeafCanonicalEncoding(t *testing.T) {
@@ -574,6 +578,493 @@ func TestSkipTable(t *testing.T) {
 	}
 	if lca != indices[5] {
 		t.Errorf("LCA of same node should be itself")
+	}
+}
+
+// --- PersistentMMR tests ---
+
+func TestPersistentMMR_AppendAndReload(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ivaldi-pmmr-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ivaldiDir := filepath.Join(tmpDir, ".ivaldi")
+	os.MkdirAll(ivaldiDir, 0755)
+	objectsDir := filepath.Join(ivaldiDir, "objects")
+	os.MkdirAll(objectsDir, 0755)
+
+	casStore := cas.NewMemoryCAS()
+
+	// Create PersistentMMR and add leaves
+	pmmr, err := NewPersistentMMR(casStore, ivaldiDir)
+	if err != nil {
+		t.Fatalf("NewPersistentMMR failed: %v", err)
+	}
+
+	leaf1 := Leaf{
+		TreeRoot:   [32]byte{1, 2, 3},
+		TimelineID: "main",
+		PrevIdx:    NoParent,
+		Author:     "Alice",
+		TimeUnix:   1000,
+		Message:    "First commit",
+	}
+	idx1, root1, err := pmmr.AppendLeaf(leaf1)
+	if err != nil {
+		t.Fatalf("AppendLeaf 1 failed: %v", err)
+	}
+	if idx1 != 0 {
+		t.Errorf("Expected idx 0, got %d", idx1)
+	}
+
+	leaf2 := Leaf{
+		TreeRoot:   [32]byte{4, 5, 6},
+		TimelineID: "main",
+		PrevIdx:    idx1,
+		Author:     "Bob",
+		TimeUnix:   2000,
+		Message:    "Second commit",
+	}
+	idx2, _, err := pmmr.AppendLeaf(leaf2)
+	if err != nil {
+		t.Fatalf("AppendLeaf 2 failed: %v", err)
+	}
+
+	if pmmr.Size() != 2 {
+		t.Errorf("Expected size 2, got %d", pmmr.Size())
+	}
+
+	// Close and reopen
+	pmmr.Close()
+
+	pmmr2, err := NewPersistentMMR(casStore, ivaldiDir)
+	if err != nil {
+		t.Fatalf("Reopen PersistentMMR failed: %v", err)
+	}
+	defer pmmr2.Close()
+
+	if pmmr2.Size() != 2 {
+		t.Errorf("After reload: expected size 2, got %d", pmmr2.Size())
+	}
+
+	retrieved1, err := pmmr2.GetLeaf(idx1)
+	if err != nil {
+		t.Fatalf("GetLeaf after reload failed: %v", err)
+	}
+	if retrieved1.Message != "First commit" {
+		t.Errorf("Message mismatch: expected 'First commit', got %q", retrieved1.Message)
+	}
+	if retrieved1.Author != "Alice" {
+		t.Errorf("Author mismatch: expected 'Alice', got %q", retrieved1.Author)
+	}
+
+	retrieved2, err := pmmr2.GetLeaf(idx2)
+	if err != nil {
+		t.Fatalf("GetLeaf 2 after reload failed: %v", err)
+	}
+	if retrieved2.Message != "Second commit" {
+		t.Errorf("Message mismatch after reload")
+	}
+
+	// Root should be consistent
+	reloadedRoot := pmmr2.Root()
+	if reloadedRoot == (Hash{}) {
+		t.Error("Reloaded root should not be zero")
+	}
+	_ = root1 // root is valid from first append
+}
+
+func TestPersistentMMR_EmptyReload(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ivaldi-pmmr-empty-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ivaldiDir := filepath.Join(tmpDir, ".ivaldi")
+	os.MkdirAll(ivaldiDir, 0755)
+	objectsDir := filepath.Join(ivaldiDir, "objects")
+	os.MkdirAll(objectsDir, 0755)
+
+	casStore := cas.NewMemoryCAS()
+
+	pmmr, err := NewPersistentMMR(casStore, ivaldiDir)
+	if err != nil {
+		t.Fatalf("NewPersistentMMR failed: %v", err)
+	}
+
+	if pmmr.Size() != 0 {
+		t.Errorf("Fresh PersistentMMR should have size 0, got %d", pmmr.Size())
+	}
+	if pmmr.Root() != (Hash{}) {
+		t.Error("Fresh PersistentMMR should have zero root")
+	}
+	pmmr.Close()
+}
+
+func TestPersistentTimelineStore(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ivaldi-pts-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ivaldiDir := filepath.Join(tmpDir, ".ivaldi")
+	os.MkdirAll(ivaldiDir, 0755)
+	objectsDir := filepath.Join(ivaldiDir, "objects")
+	os.MkdirAll(objectsDir, 0755)
+
+	store, err := NewPersistentTimelineStore(ivaldiDir)
+	if err != nil {
+		t.Fatalf("NewPersistentTimelineStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Empty initially
+	if _, ok := store.GetHead("main"); ok {
+		t.Error("Expected no head for 'main'")
+	}
+
+	// Set and get
+	err = store.SetHead("main", 42)
+	if err != nil {
+		t.Fatalf("SetHead failed: %v", err)
+	}
+
+	idx, ok := store.GetHead("main")
+	if !ok {
+		t.Error("Expected to find 'main' after SetHead")
+	}
+	if idx != 42 {
+		t.Errorf("Expected idx 42, got %d", idx)
+	}
+
+	// Update
+	err = store.SetHead("main", 100)
+	if err != nil {
+		t.Fatalf("SetHead update failed: %v", err)
+	}
+	idx, _ = store.GetHead("main")
+	if idx != 100 {
+		t.Errorf("Expected idx 100 after update, got %d", idx)
+	}
+}
+
+// --- MMR domain separation and hash tests ---
+
+func TestComputeLeafHash_DomainSeparation(t *testing.T) {
+	leafHash := Hash{1, 2, 3}
+	result := computeLeafHash(leafHash)
+
+	// Same input should give same output
+	result2 := computeLeafHash(leafHash)
+	if result != result2 {
+		t.Error("computeLeafHash should be deterministic")
+	}
+
+	// Different input should give different output
+	otherHash := Hash{4, 5, 6}
+	otherResult := computeLeafHash(otherHash)
+	if result == otherResult {
+		t.Error("Different inputs should produce different leaf hashes")
+	}
+}
+
+func TestComputeInternalHash_DomainSeparation(t *testing.T) {
+	left := Hash{1}
+	right := Hash{2}
+
+	result := computeInternalHash(left, right)
+
+	// Same inputs should give same output
+	result2 := computeInternalHash(left, right)
+	if result != result2 {
+		t.Error("computeInternalHash should be deterministic")
+	}
+
+	// Order matters
+	reversed := computeInternalHash(right, left)
+	if result == reversed {
+		t.Error("Internal hash should be order-dependent")
+	}
+
+	// Leaf vs internal should differ even with same raw bytes
+	leafResult := computeLeafHash(left)
+	internalResult := computeInternalHash(left, Hash{})
+	if leafResult == internalResult {
+		t.Error("Leaf and internal hash should differ (domain separation)")
+	}
+}
+
+func TestMMR_RootDeterminism(t *testing.T) {
+	// Build two identical MMRs and verify roots match
+	buildMMR := func() Hash {
+		mmr := NewMMR()
+		for i := 0; i < 7; i++ {
+			leaf := Leaf{
+				TreeRoot:   [32]byte{byte(i + 1)},
+				TimelineID: "main",
+				PrevIdx:    NoParent,
+				Author:     "Alice",
+				Message:    fmt.Sprintf("Commit %d", i),
+			}
+			if i > 0 {
+				leaf.PrevIdx = uint64(i - 1)
+			}
+			mmr.AppendLeaf(leaf)
+		}
+		return mmr.Root()
+	}
+
+	root1 := buildMMR()
+	root2 := buildMMR()
+
+	if root1 != root2 {
+		t.Error("Identical MMRs should produce identical roots")
+	}
+	if root1 == (Hash{}) {
+		t.Error("Root should not be zero for non-empty MMR")
+	}
+}
+
+func TestMMR_SingleLeafProof(t *testing.T) {
+	mmr := NewMMR()
+	leaf := Leaf{
+		TreeRoot:   [32]byte{42},
+		TimelineID: "main",
+		PrevIdx:    NoParent,
+		Author:     "Alice",
+		Message:    "Only commit",
+	}
+	idx, _, err := mmr.AppendLeaf(leaf)
+	if err != nil {
+		t.Fatalf("AppendLeaf failed: %v", err)
+	}
+
+	proof, err := mmr.Proof(idx)
+	if err != nil {
+		t.Fatalf("Proof failed: %v", err)
+	}
+
+	root := mmr.Root()
+	leafHash := leaf.Hash()
+	if !mmr.Verify(leafHash, proof, root) {
+		t.Error("Single-leaf proof should verify")
+	}
+}
+
+func TestMMR_ProofOutOfBounds(t *testing.T) {
+	mmr := NewMMR()
+	leaf := Leaf{TreeRoot: [32]byte{1}, PrevIdx: NoParent, Author: "A", Message: "m"}
+	mmr.AppendLeaf(leaf)
+
+	_, err := mmr.Proof(999)
+	if err == nil {
+		t.Error("Expected error for out-of-bounds proof")
+	}
+}
+
+func TestMMR_ManyLeaves(t *testing.T) {
+	mmr := NewMMR()
+	n := 100
+	for i := 0; i < n; i++ {
+		leaf := Leaf{
+			TreeRoot:   [32]byte{byte(i)},
+			TimelineID: "main",
+			PrevIdx:    NoParent,
+			Author:     "A",
+			Message:    fmt.Sprintf("c%d", i),
+		}
+		if i > 0 {
+			leaf.PrevIdx = uint64(i - 1)
+		}
+		mmr.AppendLeaf(leaf)
+	}
+
+	if mmr.Size() != uint64(n) {
+		t.Errorf("Expected size %d, got %d", n, mmr.Size())
+	}
+
+	root := mmr.Root()
+	if root == (Hash{}) {
+		t.Error("Root should not be zero for 100-leaf MMR")
+	}
+
+	// Verify all proofs
+	for i := 0; i < n; i++ {
+		leaf, _ := mmr.GetLeaf(uint64(i))
+		proof, err := mmr.Proof(uint64(i))
+		if err != nil {
+			t.Fatalf("Proof(%d) failed: %v", i, err)
+		}
+		if !mmr.Verify(leaf.Hash(), proof, root) {
+			t.Errorf("Proof verification failed for leaf %d", i)
+		}
+	}
+}
+
+// --- Leaf encoding edge cases ---
+
+func TestLeafCanonicalEncoding_EmptyFields(t *testing.T) {
+	leaf := &Leaf{
+		TreeRoot:   [32]byte{},
+		TimelineID: "",
+		PrevIdx:    NoParent,
+		Author:     "",
+		TimeUnix:   0,
+		Message:    "",
+		Meta:       nil,
+	}
+
+	canonical := leaf.CanonicalBytes()
+	parsed, err := parseLeafCanonical(canonical)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if parsed.TreeRoot != leaf.TreeRoot {
+		t.Error("TreeRoot mismatch")
+	}
+	if parsed.TimelineID != "" {
+		t.Error("TimelineID should be empty")
+	}
+	if parsed.PrevIdx != NoParent {
+		t.Error("PrevIdx should be NoParent")
+	}
+	if parsed.Author != "" {
+		t.Error("Author should be empty")
+	}
+	if parsed.Message != "" {
+		t.Error("Message should be empty")
+	}
+}
+
+func TestLeafCanonicalEncoding_NilVsEmptyMeta(t *testing.T) {
+	leafNilMeta := &Leaf{PrevIdx: NoParent, Meta: nil}
+	leafEmptyMeta := &Leaf{PrevIdx: NoParent, Meta: map[string]string{}}
+
+	hash1 := leafNilMeta.Hash()
+	hash2 := leafEmptyMeta.Hash()
+
+	// Both should produce the same hash since they both have 0 meta entries
+	if hash1 != hash2 {
+		t.Error("nil Meta and empty Meta should produce the same hash")
+	}
+}
+
+func TestLeafCanonicalEncoding_LargeMetadata(t *testing.T) {
+	meta := make(map[string]string)
+	for i := 0; i < 50; i++ {
+		meta[fmt.Sprintf("key-%03d", i)] = fmt.Sprintf("value-%d-with-extra-content", i)
+	}
+
+	leaf := &Leaf{
+		TreeRoot:   [32]byte{0xAA},
+		TimelineID: "feature/my-branch",
+		PrevIdx:    42,
+		MergeIdxs:  []uint64{10, 20, 30, 40, 50},
+		Author:     "Long Author Name <author@very-long-domain.example.com>",
+		TimeUnix:   1700000000,
+		Message:    "A very long commit message that spans multiple sentences. It includes details about the change.",
+		Meta:       meta,
+	}
+
+	canonical := leaf.CanonicalBytes()
+	parsed, err := parseLeafCanonical(canonical)
+	if err != nil {
+		t.Fatalf("Parse failed for large metadata: %v", err)
+	}
+
+	if len(parsed.Meta) != 50 {
+		t.Errorf("Expected 50 meta entries, got %d", len(parsed.Meta))
+	}
+	if parsed.Meta["key-025"] != "value-25-with-extra-content" {
+		t.Error("Meta value mismatch")
+	}
+	if len(parsed.MergeIdxs) != 5 {
+		t.Errorf("Expected 5 merge indices, got %d", len(parsed.MergeIdxs))
+	}
+}
+
+func TestLeafHash_NegativeTimestamp(t *testing.T) {
+	leaf := &Leaf{
+		TreeRoot: [32]byte{1},
+		PrevIdx:  NoParent,
+		TimeUnix: -1000, // Before epoch
+		Author:   "A",
+		Message:  "test",
+	}
+
+	canonical := leaf.CanonicalBytes()
+	parsed, err := parseLeafCanonical(canonical)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if parsed.TimeUnix != -1000 {
+		t.Errorf("Expected TimeUnix -1000, got %d", parsed.TimeUnix)
+	}
+}
+
+// --- HistoryManager edge cases ---
+
+func TestHistoryManager_MultipleTimelines(t *testing.T) {
+	mmr := NewMMR()
+	timelineStore := NewMemoryTimelineStore()
+	manager := NewHistoryManager(mmr, timelineStore)
+
+	// Create commits on three different timelines
+	for _, tl := range []string{"main", "develop", "feature"} {
+		for i := 0; i < 3; i++ {
+			leaf := Leaf{
+				TreeRoot: [32]byte{byte(i)},
+				Author:   "A",
+				Message:  fmt.Sprintf("%s commit %d", tl, i),
+			}
+			_, _, err := manager.Commit(tl, leaf)
+			if err != nil {
+				t.Fatalf("Commit to %s failed: %v", tl, err)
+			}
+		}
+	}
+
+	// Verify each timeline has its own head
+	timelines := timelineStore.List()
+	if len(timelines) != 3 {
+		t.Errorf("Expected 3 timelines, got %d", len(timelines))
+	}
+
+	// Heads should be different
+	mainHead, _ := manager.GetTimelineHead("main")
+	devHead, _ := manager.GetTimelineHead("develop")
+	featureHead, _ := manager.GetTimelineHead("feature")
+
+	if mainHead == devHead || devHead == featureHead {
+		t.Error("Different timelines should have different heads")
+	}
+
+	// Total leaves = 9
+	if mmr.Size() != 9 {
+		t.Errorf("Expected 9 total leaves, got %d", mmr.Size())
+	}
+}
+
+func TestHistoryManager_LCA_NoCommonAncestor(t *testing.T) {
+	mmr := NewMMR()
+	timelineStore := NewMemoryTimelineStore()
+	manager := NewHistoryManager(mmr, timelineStore)
+
+	// Two independent timelines with no common ancestor
+	leaf1 := Leaf{TreeRoot: [32]byte{1}, Author: "A", Message: "Independent 1"}
+	idx1, _, _ := manager.Commit("branch-a", leaf1)
+
+	leaf2 := Leaf{TreeRoot: [32]byte{2}, Author: "B", Message: "Independent 2"}
+	idx2, _, _ := manager.Commit("branch-b", leaf2)
+
+	_, err := manager.LCA(idx1, idx2)
+	if err == nil {
+		t.Error("Expected error for unrelated timelines with no common ancestor")
 	}
 }
 

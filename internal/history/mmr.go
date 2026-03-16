@@ -127,19 +127,16 @@ func (m *MMR) Proof(idx uint64) (Proof, error) {
 	
 	for {
 		siblingPos := m.getSibling(pos)
-		if siblingPos == 0 {
-			break
-		}
-		
+
 		// Check if sibling exists in nodes map
-		if siblingHash, exists := m.nodes[siblingPos]; exists {
-			proof.Siblings = append(proof.Siblings, siblingHash)
-		} else {
+		siblingHash, exists := m.nodes[siblingPos]
+		if !exists {
 			break
 		}
-		
+		proof.Siblings = append(proof.Siblings, siblingHash)
+
 		pos = m.getParent(pos)
-		
+
 		if m.isPeak(pos) {
 			break
 		}
@@ -242,11 +239,23 @@ func computeRootFromPeaks(peaks []Hash) Hash {
 }
 
 // Helper functions for MMR position calculations
+//
+// Standard 0-indexed MMR layout (post-order binary tree):
+//
+//              14 (h=3)
+//           /         \
+//      6 (h=2)       13 (h=2)
+//      / \           / \
+//   2(h1) 5(h1)  9(h1) 12(h1)
+//   /\    /\     /\    /\
+//  0  1  3  4   7  8  10 11
+//
+// Leaf positions: 0, 1, 3, 4, 7, 8, 10, 11, 15, 16, ...
+// leafIndexToPos(i) = 2*i - popcount(i)
 
 // leafIndexToPos converts a leaf index to its MMR position.
-// Standard MMR formula: position = 2 * leafIndex - popcount(leafIndex + 1) + 1
 func (m *MMR) leafIndexToPos(leafIdx uint64) uint64 {
-	return 2*leafIdx - popcount(leafIdx+1) + 1
+	return 2*leafIdx - popcount(leafIdx)
 }
 
 // popcount returns the number of set bits in x.
@@ -259,65 +268,63 @@ func popcount(x uint64) uint64 {
 	return count
 }
 
-// getHeight returns the height of a node at the given position.
+// getHeight returns the height of a node at the given MMR position.
+// Uses the "peel off mountains" algorithm for post-order binary tree positions.
 func (m *MMR) getHeight(pos uint64) uint64 {
-	// Count trailing ones in (pos + 1)
-	height := uint64(0)
-	temp := pos + 1
-	for temp&1 == 1 {
-		height++
-		temp >>= 1
+	n := pos
+	var h uint64
+	for {
+		treeSize := (uint64(1) << (h + 1)) - 1 // 2^(h+1) - 1
+		if n < treeSize {
+			if n == treeSize-1 {
+				return h // At the root of a subtree of this height
+			}
+			// Recurse into left or right child subtree
+			childSize := (treeSize - 1) / 2
+			if n < childSize {
+				h = 0 // In left subtree, restart height search
+			} else {
+				n -= childSize // In right subtree, offset position
+				h = 0
+			}
+			continue
+		}
+		h++
 	}
-	return height
 }
 
 // getSibling returns the sibling position of the given position.
 func (m *MMR) getSibling(pos uint64) uint64 {
-	height := m.getHeight(pos)
-	
-	// For leaf nodes, the sibling is the adjacent leaf
-	if height == 0 {
-		if pos%2 == 0 {
-			return pos + 1 // Right sibling
-		} else {
-			return pos - 1 // Left sibling  
-		}
+	h := m.getHeight(pos)
+	subtreeSize := (uint64(1) << (h + 1)) - 1
+
+	// Right child test: if pos+1 has height h+1, we are a right child
+	if m.getHeight(pos+1) == h+1 {
+		// Right child — sibling is to the left
+		return pos - subtreeSize
 	}
-	
-	// For internal nodes, calculate sibling based on height and position
-	mask := (uint64(1) << (height + 1)) - 1
-	if (pos & mask) == mask>>1 {
-		// This is a left child - right sibling is at pos + mask + 1
-		return pos + mask + 1
-	} else {
-		// This is a right child - left sibling is at pos - mask - 1
-		return pos - mask - 1
-	}
+	// Left child — sibling is to the right
+	return pos + subtreeSize
 }
 
 // getParent returns the parent position of the given position.
 func (m *MMR) getParent(pos uint64) uint64 {
-	height := m.getHeight(pos)
-	
-	// Parent is always at position that has height+1
-	// The formula depends on whether this is a left or right child
-	if height == 0 {
-		// For leaves, parent is at the next odd position after both siblings
-		return ((pos >> 1) << 2) + 1
+	h := m.getHeight(pos)
+	subtreeSize := (uint64(1) << (h + 1)) - 1
+
+	// Right child test: if pos+1 has height h+1, parent is pos+1
+	if m.getHeight(pos+1) == h+1 {
+		return pos + 1
 	}
-	
-	// For internal nodes, parent is calculated differently
-	step := uint64(1) << height
-	return pos + step
+	// Left child — parent is pos + subtreeSize + 1
+	return pos + subtreeSize + 1
 }
 
 // isLeftChild returns true if the position is a left child.
 func (m *MMR) isLeftChild(pos uint64) bool {
-	height := m.getHeight(pos)
-	if height == 0 {
-		return true // Leaves are considered left children
-	}
-	return ((pos + 1) >> (height + 1)) & 1 == 0
+	h := m.getHeight(pos)
+	// Right child: parent is at pos+1 with height h+1
+	return m.getHeight(pos+1) != h+1
 }
 
 // isPeak returns true if the position is currently a peak.

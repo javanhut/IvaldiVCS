@@ -93,7 +93,7 @@ var sealCmd = &cobra.Command{
 			return fmt.Errorf("failed to list workspace files: %w", err)
 		}
 
-		fmt.Printf("Found %d files in workspace\n", len(workspaceFiles))
+		fmt.Printf("Found %d staged files in workspace\n", len(workspaceFiles))
 
 		// Get author from config
 		author, err := getAuthorFromConfig()
@@ -111,9 +111,37 @@ var sealCmd = &cobra.Command{
 			parents = append(parents, parentHash)
 		}
 
+		// Merge parent tree files with staged files so the commit tree
+		// is a complete snapshot of the repository (not just the staged files).
+		allFiles := workspaceFiles
+		if len(parents) > 0 {
+			commitReader := commit.NewCommitReader(casStore)
+			parentCommitObj, err := commitReader.ReadCommit(parents[0])
+			if err == nil {
+				parentTree, err := commitReader.ReadTree(parentCommitObj)
+				if err == nil {
+					parentFiles, err := commitReader.TreeToFileMetadata(parentTree)
+					if err == nil {
+						// Build a set of staged file paths for quick lookup
+						stagedPathSet := make(map[string]bool, len(workspaceFiles))
+						for _, f := range workspaceFiles {
+							stagedPathSet[f.Path] = true
+						}
+						// Add parent files that aren't being replaced by staged files
+						for _, pf := range parentFiles {
+							if !stagedPathSet[pf.Path] {
+								allFiles = append(allFiles, pf)
+							}
+						}
+						fmt.Printf("Merged with parent: %d total files in commit\n", len(allFiles))
+					}
+				}
+			}
+		}
+
 		// Create commit object
 		commitObj, err := commitBuilder.CreateCommit(
-			workspaceFiles,
+			allFiles,
 			parents,
 			author,
 			author,
@@ -137,13 +165,19 @@ var sealCmd = &cobra.Command{
 			log.Printf("Warning: Failed to store seal name: %v", err)
 		}
 
+		// Preserve existing GitSHA1Hash from previous upload
+		existingGitSHA1 := ""
+		if timeline != nil && timeline.GitSHA1Hash != "" {
+			existingGitSHA1 = timeline.GitSHA1Hash
+		}
+
 		// Update the timeline reference with commit hash
 		err = refsManager.CreateTimeline(
 			currentTimeline,
 			refs.LocalTimeline,
 			commitHashArray,
 			[32]byte{}, // No SHA256 for now
-			"",         // No Git SHA1
+			existingGitSHA1,
 			fmt.Sprintf("Commit: %s", message),
 		)
 		if err != nil {
