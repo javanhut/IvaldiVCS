@@ -247,3 +247,77 @@ func TestFileChangeTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestSortFileChanges(t *testing.T) {
+	changes := []FileChange{
+		{Path: "b.txt", Type: "modified"},
+		{Path: "a.txt", Type: "deleted"},
+		{Path: "a.txt", Type: "added"},
+		{Path: "c.txt", Type: "added"},
+	}
+
+	sortFileChanges(changes)
+
+	// a.txt added should come before a.txt deleted
+	if changes[0].Path != "a.txt" || changes[0].Type != "added" {
+		t.Errorf("Expected a.txt/added first, got %s/%s", changes[0].Path, changes[0].Type)
+	}
+	if changes[1].Path != "a.txt" || changes[1].Type != "deleted" {
+		t.Errorf("Expected a.txt/deleted second, got %s/%s", changes[1].Path, changes[1].Type)
+	}
+	if changes[2].Path != "b.txt" {
+		t.Errorf("Expected b.txt third, got %s", changes[2].Path)
+	}
+	if changes[3].Path != "c.txt" {
+		t.Errorf("Expected c.txt fourth, got %s", changes[3].Path)
+	}
+}
+
+func TestChangeTypeOrder(t *testing.T) {
+	if changeTypeOrder("added") >= changeTypeOrder("modified") {
+		t.Error("added should sort before modified")
+	}
+	if changeTypeOrder("modified") >= changeTypeOrder("deleted") {
+		t.Error("modified should sort before deleted")
+	}
+	if changeTypeOrder("deleted") >= changeTypeOrder("unknown") {
+		t.Error("deleted should sort before unknown types")
+	}
+}
+
+func TestSortFileChanges_EmptyList(t *testing.T) {
+	var changes []FileChange
+	sortFileChanges(changes) // Should not panic
+	if len(changes) != 0 {
+		t.Error("Expected empty list")
+	}
+}
+
+func TestSortFileChanges_SingleItem(t *testing.T) {
+	changes := []FileChange{{Path: "only.txt", Type: "added"}}
+	sortFileChanges(changes)
+	if changes[0].Path != "only.txt" {
+		t.Error("Single item should remain unchanged")
+	}
+}
+
+func TestFileChange_SpecialCharFilenames(t *testing.T) {
+	changes := []FileChange{
+		{Path: "file with spaces.txt", Type: "added"},
+		{Path: "файл.txt", Type: "added"},          // unicode
+		{Path: ".hidden", Type: "added"},
+		{Path: "dir/sub dir/file.txt", Type: "modified"},
+	}
+
+	sortFileChanges(changes)
+
+	// Should not panic and should maintain valid ordering
+	for i := 1; i < len(changes); i++ {
+		if changes[i].Path < changes[i-1].Path {
+			// Same path with different type is OK, otherwise should be sorted
+			if changes[i].Path != changes[i-1].Path {
+				t.Errorf("Not sorted: %s came after %s", changes[i].Path, changes[i-1].Path)
+			}
+		}
+	}
+}

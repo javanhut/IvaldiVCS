@@ -71,7 +71,11 @@ func (s *OursStrategy) Resolve(merger *ChunkMerger, path string, base, left, rig
 
 	// If left version exists, use it
 	if left != nil {
-		result.MergedChunks, result.MergedSize = merger.extractChunks(left.FileRef)
+		var err error
+		result.MergedChunks, result.MergedSize, err = merger.extractChunks(left.FileRef)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Otherwise, file is deleted in left (accept deletion)
 
@@ -93,7 +97,11 @@ func (s *TheirsStrategy) Resolve(merger *ChunkMerger, path string, base, left, r
 
 	// If right version exists, use it
 	if right != nil {
-		result.MergedChunks, result.MergedSize = merger.extractChunks(right.FileRef)
+		var err error
+		result.MergedChunks, result.MergedSize, err = merger.extractChunks(right.FileRef)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Otherwise, file is deleted in right (accept deletion)
 
@@ -117,13 +125,22 @@ func (s *UnionStrategy) Resolve(merger *ChunkMerger, path string, base, left, ri
 	// If both versions exist, combine them
 	if left != nil && right != nil {
 		// Get chunks from both versions
-		leftChunks, _ := merger.extractChunks(left.FileRef)
-		rightChunks, _ := merger.extractChunks(right.FileRef)
+		leftChunks, _, err := merger.extractChunks(left.FileRef)
+		if err != nil {
+			return nil, err
+		}
+		rightChunks, _, err := merger.extractChunks(right.FileRef)
+		if err != nil {
+			return nil, err
+		}
 
 		// Find what changed in each version compared to base
 		var baseChunks []cas.Hash
 		if base != nil {
-			baseChunks, _ = merger.extractChunks(base.FileRef)
+			baseChunks, _, err = merger.extractChunks(base.FileRef)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		// Strategy: Include all chunks from both versions
@@ -176,11 +193,19 @@ func (s *UnionStrategy) Resolve(merger *ChunkMerger, path string, base, left, ri
 
 	// If only one version exists, use it
 	if left != nil {
-		result.MergedChunks, result.MergedSize = merger.extractChunks(left.FileRef)
+		var err error
+		result.MergedChunks, result.MergedSize, err = merger.extractChunks(left.FileRef)
+		if err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 	if right != nil {
-		result.MergedChunks, result.MergedSize = merger.extractChunks(right.FileRef)
+		var err error
+		result.MergedChunks, result.MergedSize, err = merger.extractChunks(right.FileRef)
+		if err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 
@@ -203,7 +228,11 @@ func (s *BaseStrategy) Resolve(merger *ChunkMerger, path string, base, left, rig
 
 	// If base version exists, use it
 	if base != nil {
-		result.MergedChunks, result.MergedSize = merger.extractChunks(base.FileRef)
+		var err error
+		result.MergedChunks, result.MergedSize, err = merger.extractChunks(base.FileRef)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Otherwise, file didn't exist in base (accept deletion/non-existence)
 
@@ -305,7 +334,10 @@ func BuildMergedFile(casStore cas.CAS, chunks []cas.Hash, totalSize int64) (file
 		if len(chunkData) > 0 && chunkData[0] == 0x00 {
 			// It's a leaf - extract the content
 			merger := &ChunkMerger{CAS: casStore}
-			leafData := merger.extractLeafData(chunkData)
+			leafData, err := merger.extractLeafData(chunkData)
+			if err != nil {
+				return filechunk.NodeRef{}, fmt.Errorf("failed to extract leaf data: %w", err)
+			}
 			content = append(content, leafData...)
 		} else {
 			// Raw data or internal node - for now, append as-is

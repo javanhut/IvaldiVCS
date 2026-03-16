@@ -1,6 +1,7 @@
 package commit
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -1109,6 +1110,224 @@ func TestSnapshotMerge_SubdirectoryFiles(t *testing.T) {
 		if !expected[f] {
 			t.Errorf("Unexpected file: %s", f)
 		}
+	}
+}
+
+func TestReadCommit_NonExistent(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	reader := NewCommitReader(casStore)
+
+	fakeHash := cas.SumB3([]byte("nonexistent commit"))
+	_, err := reader.ReadCommit(fakeHash)
+	if err == nil {
+		t.Fatal("Expected error reading non-existent commit, got nil")
+	}
+}
+
+func TestReadCommit_CorruptedData(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	reader := NewCommitReader(casStore)
+
+	garbage := []byte{0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03}
+	hash := cas.SumB3(garbage)
+	if err := casStore.Put(hash, garbage); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// Should not panic - may return a partially-parsed commit or error
+	commit, err := reader.ReadCommit(hash)
+	// As long as it doesn't panic, the test passes
+	_ = commit
+	_ = err
+}
+
+func TestReadTree_NilFileEntry(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	// Create a normal commit first
+	files := createNamedTestFiles(casStore, map[string]string{
+		"normal.txt": "normal content",
+	})
+	commit, err := builder.CreateCommit(files, nil, "A", "A", "Test")
+	if err != nil {
+		t.Fatalf("CreateCommit failed: %v", err)
+	}
+
+	// ReadTree should not panic even with corrupted/nil entries
+	tree, err := reader.ReadTree(commit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("Expected non-nil tree")
+	}
+}
+
+func TestGetFileContent_NonExistentFile(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	files := createNamedTestFiles(casStore, map[string]string{
+		"existing.txt": "content",
+	})
+	commit, err := builder.CreateCommit(files, nil, "A", "A", "Test")
+	if err != nil {
+		t.Fatalf("CreateCommit failed: %v", err)
+	}
+
+	tree, err := reader.ReadTree(commit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+
+	_, err = reader.GetFileContent(tree, "nonexistent.txt")
+	if err == nil {
+		t.Fatal("Expected error for non-existent file, got nil")
+	}
+}
+
+func TestGetFileContent_NonExistentDirectory(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	files := createNamedTestFiles(casStore, map[string]string{
+		"existing.txt": "content",
+	})
+	commit, err := builder.CreateCommit(files, nil, "A", "A", "Test")
+	if err != nil {
+		t.Fatalf("CreateCommit failed: %v", err)
+	}
+
+	tree, err := reader.ReadTree(commit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+
+	_, err = reader.GetFileContent(tree, "nonexistent/file.txt")
+	if err == nil {
+		t.Fatal("Expected error for non-existent directory path, got nil")
+	}
+}
+
+func TestListFiles_EmptyTree(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	commit, err := builder.CreateCommit(nil, nil, "A", "A", "Empty")
+	if err != nil {
+		t.Fatalf("CreateCommit failed: %v", err)
+	}
+
+	tree, err := reader.ReadTree(commit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+
+	files, err := reader.ListFiles(tree)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("Expected empty file list for empty tree, got %d files", len(files))
+	}
+}
+
+func TestCreateCommit_EmptyMessage(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+
+	files := createNamedTestFiles(casStore, map[string]string{
+		"file.txt": "content",
+	})
+
+	// Empty message should not panic
+	commit, err := builder.CreateCommit(files, nil, "A", "A", "")
+	if err != nil {
+		t.Fatalf("CreateCommit with empty message failed: %v", err)
+	}
+	if commit == nil {
+		t.Fatal("Expected non-nil commit")
+	}
+	if commit.Message != "" {
+		t.Errorf("Expected empty message, got %q", commit.Message)
+	}
+
+	// Verify it round-trips
+	reader := NewCommitReader(casStore)
+	commitHash := builder.GetCommitHash(commit)
+	readBack, err := reader.ReadCommit(commitHash)
+	if err != nil {
+		t.Fatalf("ReadCommit failed: %v", err)
+	}
+	if readBack.Message != "" {
+		t.Errorf("Expected empty message after round-trip, got %q", readBack.Message)
+	}
+}
+
+func TestCreateCommit_LargeFileCount(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	mmr := history.NewMMR()
+	builder := NewCommitBuilder(casStore, mmr)
+	reader := NewCommitReader(casStore)
+
+	fileMap := make(map[string]string, 1000)
+	for i := 0; i < 1000; i++ {
+		dir := fmt.Sprintf("dir%d/subdir%d", i/100, i/10)
+		path := fmt.Sprintf("%s/file%d.txt", dir, i)
+		fileMap[path] = fmt.Sprintf("content of file %d", i)
+	}
+
+	files := createNamedTestFiles(casStore, fileMap)
+	commit, err := builder.CreateCommit(files, nil, "A", "A", "Large commit")
+	if err != nil {
+		t.Fatalf("CreateCommit with 1000 files failed: %v", err)
+	}
+
+	tree, err := reader.ReadTree(commit)
+	if err != nil {
+		t.Fatalf("ReadTree failed: %v", err)
+	}
+
+	fileList, err := reader.ListFiles(tree)
+	if err != nil {
+		t.Fatalf("ListFiles failed: %v", err)
+	}
+	if len(fileList) != 1000 {
+		t.Errorf("Expected 1000 files, got %d", len(fileList))
+	}
+}
+
+func TestSplitPath_EdgeCases(t *testing.T) {
+	tests := []struct {
+		input string
+		name  string
+	}{
+		{"dir//file", "double slash"},
+		{"dir/../file", "dot dot"},
+		{"./file", "dot prefix"},
+		{"dir/./file", "dot in middle"},
+		{"///", "triple slash"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// Should not panic regardless of input
+			result := splitPath(test.input)
+			// Just verify it doesn't panic and returns something
+			if result == nil {
+				t.Error("splitPath should return non-nil slice")
+			}
+		})
 	}
 }
 

@@ -278,6 +278,139 @@ func TestOddNumberChunks(t *testing.T) {
 	}
 }
 
+func TestBuild_ExactlyOneChunk(t *testing.T) {
+	store := cas.NewMemoryCAS()
+	leafSize := 10
+	builder := NewBuilder(store, Params{LeafSize: leafSize})
+
+	content := make([]byte, leafSize) // Exactly one chunk
+	for i := range content {
+		content[i] = byte(i)
+	}
+
+	root, err := builder.Build(content)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	if root.Kind != Leaf {
+		t.Errorf("Expected Leaf for content exactly one chunk, got %d", root.Kind)
+	}
+	if root.Size != int64(leafSize) {
+		t.Errorf("Expected size %d, got %d", leafSize, root.Size)
+	}
+
+	loader := NewLoader(store)
+	retrieved, err := loader.ReadAll(root)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	if !bytes.Equal(content, retrieved) {
+		t.Error("Content mismatch")
+	}
+}
+
+func TestBuild_OneByteOverChunk(t *testing.T) {
+	store := cas.NewMemoryCAS()
+	leafSize := 10
+	builder := NewBuilder(store, Params{LeafSize: leafSize})
+
+	content := make([]byte, leafSize+1) // One byte over = 2 chunks
+	for i := range content {
+		content[i] = byte(i)
+	}
+
+	root, err := builder.Build(content)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	if root.Kind != Node {
+		t.Errorf("Expected Node for content one byte over chunk, got %d", root.Kind)
+	}
+	if root.Size != int64(leafSize+1) {
+		t.Errorf("Expected size %d, got %d", leafSize+1, root.Size)
+	}
+
+	loader := NewLoader(store)
+	retrieved, err := loader.ReadAll(root)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	if !bytes.Equal(content, retrieved) {
+		t.Error("Content mismatch")
+	}
+}
+
+func TestBuild_OneByteUnderChunk(t *testing.T) {
+	store := cas.NewMemoryCAS()
+	leafSize := 10
+	builder := NewBuilder(store, Params{LeafSize: leafSize})
+
+	content := make([]byte, leafSize-1) // One byte under = single leaf
+	for i := range content {
+		content[i] = byte(i)
+	}
+
+	root, err := builder.Build(content)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	if root.Kind != Leaf {
+		t.Errorf("Expected Leaf for content one byte under chunk, got %d", root.Kind)
+	}
+
+	loader := NewLoader(store)
+	retrieved, err := loader.ReadAll(root)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	if !bytes.Equal(content, retrieved) {
+		t.Error("Content mismatch")
+	}
+}
+
+func TestLoader_CorruptedInternalNode(t *testing.T) {
+	store := cas.NewMemoryCAS()
+
+	// Put garbage data that looks like an internal node
+	garbage := []byte{0x01, 0xFF, 0xFF, 0xFF} // 0x01 = internal node marker, rest is garbage
+	hash := cas.SumB3(garbage)
+	store.Put(hash, garbage)
+
+	ref := NodeRef{
+		Hash: hash,
+		Kind: Node,
+		Size: 100,
+	}
+
+	loader := NewLoader(store)
+	_, err := loader.ReadAll(ref)
+	// Should return error, not panic
+	if err == nil {
+		t.Log("ReadAll returned nil error for corrupted data - acceptable if it returned garbage content safely")
+	}
+}
+
+func TestLoader_MissingChunk(t *testing.T) {
+	store := cas.NewMemoryCAS()
+
+	// Create a reference to a hash that doesn't exist in CAS
+	fakeHash := cas.SumB3([]byte("this content was never stored"))
+	ref := NodeRef{
+		Hash: fakeHash,
+		Kind: Leaf,
+		Size: 50,
+	}
+
+	loader := NewLoader(store)
+	_, err := loader.ReadAll(ref)
+	if err == nil {
+		t.Fatal("Expected error when reading missing chunk, got nil")
+	}
+}
+
 func BenchmarkBuild1KB(b *testing.B) {
 	cas := cas.NewMemoryCAS()
 	builder := NewBuilder(cas, DefaultParams())

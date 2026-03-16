@@ -10,7 +10,9 @@ package diffmerge
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/javanhut/Ivaldi-vcs/internal/cas"
 	"github.com/javanhut/Ivaldi-vcs/internal/filechunk"
@@ -70,20 +72,32 @@ func (cm *ChunkMerger) MergeFile(path string, base, left, right *wsindex.FileMet
 	case !baseExists && leftExists && !rightExists:
 		// Added on left only
 		result.Success = true
-		result.MergedChunks, result.MergedSize = cm.extractChunks(left.FileRef)
+		var err error
+		result.MergedChunks, result.MergedSize, err = cm.extractChunks(left.FileRef)
+		if err != nil {
+			return nil, err
+		}
 		return result, nil
 
 	case !baseExists && !leftExists && rightExists:
 		// Added on right only
 		result.Success = true
-		result.MergedChunks, result.MergedSize = cm.extractChunks(right.FileRef)
+		var err error
+		result.MergedChunks, result.MergedSize, err = cm.extractChunks(right.FileRef)
+		if err != nil {
+			return nil, err
+		}
 		return result, nil
 
 	case !baseExists && leftExists && rightExists:
 		// Added on both sides - check if same content
 		if cm.filesEqual(left, right) {
 			result.Success = true
-			result.MergedChunks, result.MergedSize = cm.extractChunks(left.FileRef)
+			var err error
+			result.MergedChunks, result.MergedSize, err = cm.extractChunks(left.FileRef)
+			if err != nil {
+				return nil, err
+			}
 			return result, nil
 		}
 		// Different content - need to merge at chunk level
@@ -119,19 +133,31 @@ func (cm *ChunkMerger) MergeFile(path string, base, left, right *wsindex.FileMet
 		if cm.filesEqual(left, right) {
 			// Both made same change
 			result.Success = true
-			result.MergedChunks, result.MergedSize = cm.extractChunks(left.FileRef)
+			var err error
+			result.MergedChunks, result.MergedSize, err = cm.extractChunks(left.FileRef)
+			if err != nil {
+				return nil, err
+			}
 			return result, nil
 		}
 		if cm.filesEqual(base, left) {
 			// No change on left, take right
 			result.Success = true
-			result.MergedChunks, result.MergedSize = cm.extractChunks(right.FileRef)
+			var err error
+			result.MergedChunks, result.MergedSize, err = cm.extractChunks(right.FileRef)
+			if err != nil {
+				return nil, err
+			}
 			return result, nil
 		}
 		if cm.filesEqual(base, right) {
 			// No change on right, take left
 			result.Success = true
-			result.MergedChunks, result.MergedSize = cm.extractChunks(left.FileRef)
+			var err error
+			result.MergedChunks, result.MergedSize, err = cm.extractChunks(left.FileRef)
+			if err != nil {
+				return nil, err
+			}
 			return result, nil
 		}
 		// Both changed - need chunk-level merge
@@ -152,13 +178,25 @@ func (cm *ChunkMerger) mergeChunks(path string, base, left, right *wsindex.FileM
 	var baseChunks, leftChunks, rightChunks []cas.Hash
 
 	if base != nil {
-		baseChunks, _ = cm.extractChunks(base.FileRef)
+		var err error
+		baseChunks, _, err = cm.extractChunks(base.FileRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract base chunks: %w", err)
+		}
 	}
 	if left != nil {
-		leftChunks, _ = cm.extractChunks(left.FileRef)
+		var err error
+		leftChunks, _, err = cm.extractChunks(left.FileRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract left chunks: %w", err)
+		}
 	}
 	if right != nil {
-		rightChunks, _ = cm.extractChunks(right.FileRef)
+		var err error
+		rightChunks, _, err = cm.extractChunks(right.FileRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract right chunks: %w", err)
+		}
 	}
 
 	// Find the maximum number of chunks across all versions
@@ -323,21 +361,70 @@ func (cm *ChunkMerger) mergeChunk(index int, base, left, right *cas.Hash) (*cas.
 }
 
 // extractChunks extracts all chunk hashes from a file's Merkle tree.
-func (cm *ChunkMerger) extractChunks(fileRef filechunk.NodeRef) ([]cas.Hash, int64) {
-	// For now, treat entire file as single chunk
-	// In a full implementation, this would traverse the Merkle tree
-	// and extract all leaf chunks in order
-
-	// Simple implementation: if the file is a leaf, return it
-	// If it's an internal node, we'd need to traverse it
-
+func (cm *ChunkMerger) extractChunks(fileRef filechunk.NodeRef) ([]cas.Hash, int64, error) {
 	if fileRef.Kind == filechunk.Leaf {
-		return []cas.Hash{fileRef.Hash}, fileRef.Size
+		return []cas.Hash{fileRef.Hash}, fileRef.Size, nil
 	}
 
-	// For internal nodes, we need to traverse
-	// For now, simplified: return the root hash as single chunk
-	return []cas.Hash{fileRef.Hash}, fileRef.Size
+	// For internal nodes, traverse the Merkle tree to get all leaf hashes
+	var leafHashes []cas.Hash
+	err := cm.collectLeafHashes(fileRef, &leafHashes)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to extract chunks: %w", err)
+	}
+	return leafHashes, fileRef.Size, nil
+}
+
+// collectLeafHashes recursively collects all leaf hashes from a filechunk Merkle tree.
+func (cm *ChunkMerger) collectLeafHashes(ref filechunk.NodeRef, out *[]cas.Hash) error {
+	if ref.Kind == filechunk.Leaf {
+		*out = append(*out, ref.Hash)
+		return nil
+	}
+
+	// Read the internal node
+	data, err := cm.CAS.Get(ref.Hash)
+	if err != nil {
+		return fmt.Errorf("failed to read internal node: %w", err)
+	}
+
+	// Parse internal node format: 0x01 | uvarint(childCount) | childHash[32] * childCount | uvarint(totalSize)
+	if len(data) == 0 || data[0] != 0x01 {
+		// Not an internal node, treat as leaf
+		*out = append(*out, ref.Hash)
+		return nil
+	}
+
+	buf := bytes.NewReader(data[1:])
+	childCount, err := binary.ReadUvarint(buf)
+	if err != nil {
+		return fmt.Errorf("failed to read child count: %w", err)
+	}
+
+	for i := uint64(0); i < childCount; i++ {
+		var childHash cas.Hash
+		if _, err := io.ReadFull(buf, childHash[:]); err != nil {
+			return fmt.Errorf("failed to read child hash %d: %w", i, err)
+		}
+
+		// Determine child kind by reading its data
+		childData, err := cm.CAS.Get(childHash)
+		if err != nil {
+			return fmt.Errorf("failed to read child node: %w", err)
+		}
+
+		childKind := filechunk.Leaf
+		if len(childData) > 0 && childData[0] == 0x01 {
+			childKind = filechunk.Node
+		}
+
+		childRef := filechunk.NodeRef{Hash: childHash, Kind: childKind}
+		if err := cm.collectLeafHashes(childRef, out); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // filesEqual checks if two file metadata entries have same content.
@@ -389,7 +476,11 @@ func (cm *ChunkMerger) populateChunkData(conflict *ChunkConflict) error {
 		if err != nil {
 			return fmt.Errorf("failed to load base chunk: %w", err)
 		}
-		conflict.BaseData = cm.extractLeafData(data)
+		leafData, err := cm.extractLeafData(data)
+		if err != nil {
+			return fmt.Errorf("failed to extract base leaf data: %w", err)
+		}
+		conflict.BaseData = leafData
 	}
 
 	if conflict.LeftChunk != nil {
@@ -397,7 +488,11 @@ func (cm *ChunkMerger) populateChunkData(conflict *ChunkConflict) error {
 		if err != nil {
 			return fmt.Errorf("failed to load left chunk: %w", err)
 		}
-		conflict.LeftData = cm.extractLeafData(data)
+		leafData, err := cm.extractLeafData(data)
+		if err != nil {
+			return fmt.Errorf("failed to extract left leaf data: %w", err)
+		}
+		conflict.LeftData = leafData
 	}
 
 	if conflict.RightChunk != nil {
@@ -405,17 +500,21 @@ func (cm *ChunkMerger) populateChunkData(conflict *ChunkConflict) error {
 		if err != nil {
 			return fmt.Errorf("failed to load right chunk: %w", err)
 		}
-		conflict.RightData = cm.extractLeafData(data)
+		leafData, err := cm.extractLeafData(data)
+		if err != nil {
+			return fmt.Errorf("failed to extract right leaf data: %w", err)
+		}
+		conflict.RightData = leafData
 	}
 
 	return nil
 }
 
 // extractLeafData extracts content from a leaf chunk's canonical encoding.
-func (cm *ChunkMerger) extractLeafData(encoded []byte) []byte {
+func (cm *ChunkMerger) extractLeafData(encoded []byte) ([]byte, error) {
 	if len(encoded) == 0 || encoded[0] != 0x00 {
 		// Not a leaf, return as-is (might be internal node or raw data)
-		return encoded
+		return encoded, nil
 	}
 
 	// Skip leaf marker (0x00) and length prefix
@@ -426,9 +525,12 @@ func (cm *ChunkMerger) extractLeafData(encoded []byte) []byte {
 	var shift uint
 	for {
 		if buf.Len() == 0 {
-			return nil
+			return nil, fmt.Errorf("unexpected end of data reading varint")
 		}
-		b, _ := buf.ReadByte()
+		b, err := buf.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read varint byte: %w", err)
+		}
 		chunkLen |= uint64(b&0x7f) << shift
 		if b&0x80 == 0 {
 			break
@@ -438,8 +540,10 @@ func (cm *ChunkMerger) extractLeafData(encoded []byte) []byte {
 
 	// Read chunk data
 	chunk := make([]byte, chunkLen)
-	buf.Read(chunk)
-	return chunk
+	if _, err := io.ReadFull(buf, chunk); err != nil {
+		return nil, fmt.Errorf("failed to read chunk data: %w", err)
+	}
+	return chunk, nil
 }
 
 // max returns the maximum of two integers.

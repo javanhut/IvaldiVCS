@@ -1260,3 +1260,270 @@ func TestMergeResolution_Summary_Detailed(t *testing.T) {
 		t.Errorf("Expected conflict count in summary, got: %s", summary)
 	}
 }
+
+func TestChunkMerger_MergeFile_AllCases(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	cm := NewChunkMerger(casStore)
+
+	// Store actual chunk data in CAS for each test file
+	storeContent := func(content string) *wsindex.FileMetadata {
+		data := []byte(content)
+		hash := cas.SumB3(data)
+		casStore.Put(hash, data)
+		fm := createTestFileMetadata("test", content)
+		return &fm
+	}
+
+	base := storeContent("base content")
+	left := storeContent("left content")
+	right := storeContent("right content")
+	sameAsBase := storeContent("base content")
+
+	tests := []struct {
+		name    string
+		base    *wsindex.FileMetadata
+		left    *wsindex.FileMetadata
+		right   *wsindex.FileMetadata
+		success bool
+	}{
+		{"none-none-none", nil, nil, nil, true},
+		{"none-left-none", nil, left, nil, true},
+		{"none-none-right", nil, nil, right, true},
+		{"none-left-right-same", nil, left, left, true},          // same content added
+		{"none-left-right-diff", nil, left, right, false},        // different content added = conflict
+		{"base-none-none", base, nil, nil, true},                 // deleted both sides
+		{"base-left-none-modified", base, left, nil, false},      // modified left, deleted right = conflict
+		{"base-left-none-unchanged", base, sameAsBase, nil, true}, // unchanged left, deleted right = accept deletion
+		{"base-none-right-modified", base, nil, right, false},    // deleted left, modified right = conflict
+		{"base-none-right-unchanged", base, nil, sameAsBase, true}, // deleted left, unchanged right = accept deletion
+		{"base-left-right-same", base, left, left, true},         // both same change
+		{"base-leftUnchanged-right", base, sameAsBase, right, true}, // only right changed
+		{"base-left-rightUnchanged", base, left, sameAsBase, true},  // only left changed
+		{"base-left-right-diff", base, left, right, false},       // both changed differently = conflict
+		{"base-left-right-allSame", base, sameAsBase, sameAsBase, true}, // no changes
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := cm.MergeFile("test.txt", tt.base, tt.left, tt.right)
+			if err != nil {
+				t.Fatalf("MergeFile error: %v", err)
+			}
+			if result.Success != tt.success {
+				t.Errorf("Expected success=%v, got %v (conflicts: %d)", tt.success, result.Success, len(result.Conflicts))
+			}
+		})
+	}
+}
+
+func TestChunkMerger_ExtractChunks_InternalNode(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	cm := NewChunkMerger(casStore)
+
+	// Build a multi-chunk file using filechunk.Builder with small leaf size
+	builder := filechunk.NewBuilder(casStore, filechunk.Params{LeafSize: 5})
+	content := []byte("hello world test data chunks")
+	ref, err := builder.Build(content)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// For an internal node, extractChunks should return individual leaf hashes
+	chunks, size, extractErr := cm.extractChunks(ref)
+	if extractErr != nil {
+		t.Fatalf("extractChunks failed: %v", extractErr)
+	}
+
+	if size != int64(len(content)) {
+		t.Errorf("Expected size %d, got %d", len(content), size)
+	}
+
+	// For a file that needs multiple chunks, we should get more than 1 hash
+	if ref.Kind == filechunk.Node && len(chunks) <= 1 {
+		t.Errorf("Expected multiple chunks for internal node, got %d", len(chunks))
+	}
+
+	// All chunk hashes should exist in CAS
+	for i, h := range chunks {
+		_, err := casStore.Get(h)
+		if err != nil {
+			t.Errorf("Chunk %d hash not found in CAS: %v", i, err)
+		}
+	}
+}
+
+func TestChunkMerger_MergeChunks_ConflictData(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	cm := NewChunkMerger(casStore)
+
+	// Create files with actual CAS-backed data
+	storeAndCreate := func(content string) *wsindex.FileMetadata {
+		data := []byte(content)
+		// Build through filechunk to get proper leaf encoding
+		builder := filechunk.NewBuilder(casStore, filechunk.DefaultParams())
+		ref, err := builder.Build(data)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		return &wsindex.FileMetadata{
+			Path:    "conflict.txt",
+			FileRef: ref,
+			Size:    int64(len(data)),
+		}
+	}
+
+	base := storeAndCreate("base content")
+	left := storeAndCreate("left modified content")
+	right := storeAndCreate("right modified content")
+
+	result, err := cm.MergeFile("conflict.txt", base, left, right)
+	if err != nil {
+		t.Fatalf("MergeFile error: %v", err)
+	}
+
+	if result.Success {
+		t.Fatal("Expected conflict, got success")
+	}
+	if len(result.Conflicts) == 0 {
+		t.Fatal("Expected at least one conflict")
+	}
+
+	conflict := result.Conflicts[0]
+	if conflict.BaseChunk == nil {
+		t.Error("Expected BaseChunk to be set")
+	}
+	if conflict.LeftChunk == nil {
+		t.Error("Expected LeftChunk to be set")
+	}
+	if conflict.RightChunk == nil {
+		t.Error("Expected RightChunk to be set")
+	}
+	// BaseData/LeftData/RightData should be populated
+	if len(conflict.BaseData) == 0 {
+		t.Error("Expected BaseData to be populated")
+	}
+	if len(conflict.LeftData) == 0 {
+		t.Error("Expected LeftData to be populated")
+	}
+	if len(conflict.RightData) == 0 {
+		t.Error("Expected RightData to be populated")
+	}
+}
+
+func TestChunkMerger_CorruptedCAS(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	cm := NewChunkMerger(casStore)
+
+	// Create file metadata pointing to non-existent CAS data
+	fakeHash := cas.SumB3([]byte("does not exist in CAS"))
+	fakeMeta := &wsindex.FileMetadata{
+		Path: "fake.txt",
+		FileRef: filechunk.NodeRef{
+			Hash: fakeHash,
+			Kind: filechunk.Leaf,
+			Size: 100,
+		},
+		Size: 100,
+	}
+
+	base := fakeMeta
+	left := fakeMeta
+	right := fakeMeta
+
+	// This should not panic. It may return an error or a result with no conflict data.
+	result, err := cm.MergeFile("fake.txt", base, left, right)
+	// Both outcomes are acceptable as long as no panic
+	_ = result
+	_ = err
+}
+
+func TestStrategyResolver_UnknownStrategy(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	resolver := NewStrategyResolver(casStore)
+
+	_, err := resolver.Resolve(StrategyType("bogus"), "file.txt", nil, nil, nil)
+	if err == nil {
+		t.Fatal("Expected error for unknown strategy, got nil")
+	}
+}
+
+func TestStrategyResolver_OursAlwaysWins(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	resolver := NewStrategyResolver(casStore)
+
+	base := createTestFileMetadata("f.txt", "base")
+	left := createTestFileMetadata("f.txt", "left wins")
+	right := createTestFileMetadata("f.txt", "right loses")
+
+	// Store in CAS so extractChunks works
+	for _, content := range []string{"base", "left wins", "right loses"} {
+		data := []byte(content)
+		casStore.Put(cas.SumB3(data), data)
+	}
+
+	result, err := resolver.Resolve(StrategyOurs, "f.txt", &base, &left, &right)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success with ours strategy")
+	}
+	// Ours = left; should have left's chunks
+	if len(result.MergedChunks) == 0 {
+		t.Fatal("Expected merged chunks")
+	}
+	if result.MergedChunks[0] != left.FileRef.Hash {
+		t.Error("Expected ours (left) hash to be used")
+	}
+}
+
+func TestStrategyResolver_TheirsAlwaysWins(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	resolver := NewStrategyResolver(casStore)
+
+	base := createTestFileMetadata("f.txt", "base")
+	left := createTestFileMetadata("f.txt", "left loses")
+	right := createTestFileMetadata("f.txt", "right wins")
+
+	for _, content := range []string{"base", "left loses", "right wins"} {
+		data := []byte(content)
+		casStore.Put(cas.SumB3(data), data)
+	}
+
+	result, err := resolver.Resolve(StrategyTheirs, "f.txt", &base, &left, &right)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success with theirs strategy")
+	}
+	if len(result.MergedChunks) == 0 {
+		t.Fatal("Expected merged chunks")
+	}
+	if result.MergedChunks[0] != right.FileRef.Hash {
+		t.Error("Expected theirs (right) hash to be used")
+	}
+}
+
+func TestStrategyResolver_ResolveWithFallback(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	resolver := NewStrategyResolver(casStore)
+
+	base := createTestFileMetadata("f.txt", "base")
+	left := createTestFileMetadata("f.txt", "left changed")
+	right := createTestFileMetadata("f.txt", "right changed")
+
+	for _, content := range []string{"base", "left changed", "right changed"} {
+		data := []byte(content)
+		casStore.Put(cas.SumB3(data), data)
+	}
+
+	// Auto strategy will produce a conflict; fallback to ours should resolve it
+	result, err := resolver.ResolveWithFallback(StrategyAuto, StrategyOurs, "f.txt", &base, &left, &right)
+	if err != nil {
+		t.Fatalf("ResolveWithFallback failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success with fallback to ours")
+	}
+}

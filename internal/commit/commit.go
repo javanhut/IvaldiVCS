@@ -393,9 +393,15 @@ func (cr *CommitReader) ReadTree(commit *CommitObject) (*TreeObject, error) {
 
 		switch entry.Type {
 		case hamtdir.FileEntry:
+			if entry.File == nil {
+				continue
+			}
 			objType = BlobObject
 			hash = entry.File.Hash
 		case hamtdir.DirEntry:
+			if entry.Dir == nil {
+				continue
+			}
 			objType = TreeObject_Type
 			hash = entry.Dir.Hash
 		}
@@ -503,9 +509,15 @@ func (cr *CommitReader) listFilesRecursive(tree *TreeObject, prefix string, file
 
 				switch subEntry.Type {
 				case hamtdir.FileEntry:
+					if subEntry.File == nil {
+						continue
+					}
 					objType = BlobObject
 					hash = subEntry.File.Hash
 				case hamtdir.DirEntry:
+					if subEntry.Dir == nil {
+						continue
+					}
 					objType = TreeObject_Type
 					hash = subEntry.Dir.Hash
 				}

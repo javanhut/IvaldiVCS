@@ -619,6 +619,66 @@ func TestScanWorkspaceSkipsIvaldiDir(t *testing.T) {
 	}
 }
 
+func TestScanSpecificFiles_NonExistent(t *testing.T) {
+	_, _, materializer, cleanup := setupTestWorkspace(t)
+	defer cleanup()
+
+	// Scan a file that definitely doesn't exist
+	index, err := materializer.ScanSpecificFiles([]string{"totally_nonexistent_file.xyz"})
+	// Should not error (existing test TestScanSpecificFilesMissingFile confirms this)
+	// but should return empty or skip the missing file
+	if err != nil {
+		t.Fatalf("ScanSpecificFiles should not fail on non-existent files: %v", err)
+	}
+	if index.Count != 0 {
+		t.Errorf("Expected 0 files for non-existent path, got %d", index.Count)
+	}
+}
+
+func TestScanSpecificFiles_EmptyFile(t *testing.T) {
+	_, workDir, materializer, cleanup := setupTestWorkspace(t)
+	defer cleanup()
+
+	// Create a zero-byte file
+	emptyPath := filepath.Join(workDir, "empty.txt")
+	err := os.WriteFile(emptyPath, []byte{}, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create empty file: %v", err)
+	}
+
+	index, err := materializer.ScanSpecificFiles([]string{"empty.txt"})
+	if err != nil {
+		t.Fatalf("ScanSpecificFiles failed for empty file: %v", err)
+	}
+	if index.Count != 1 {
+		t.Errorf("Expected 1 file (empty), got %d", index.Count)
+	}
+}
+
+func TestScanSpecificFiles_Symlink(t *testing.T) {
+	_, workDir, materializer, cleanup := setupTestWorkspace(t)
+	defer cleanup()
+
+	// Create a regular file and a symlink to it
+	realPath := filepath.Join(workDir, "real.txt")
+	err := os.WriteFile(realPath, []byte("real content"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	linkPath := filepath.Join(workDir, "link.txt")
+	err = os.Symlink(realPath, linkPath)
+	if err != nil {
+		t.Skip("Symlinks not supported on this platform")
+	}
+
+	// Should handle gracefully - either include or skip, but not panic
+	index, err := materializer.ScanSpecificFiles([]string{"link.txt"})
+	// We just care it doesn't panic; the result depends on implementation
+	_ = index
+	_ = err
+}
+
 func BenchmarkScanWorkspace(b *testing.B) {
 	tempDir := b.TempDir()
 	ivaldiDir := filepath.Join(tempDir, ".ivaldi")

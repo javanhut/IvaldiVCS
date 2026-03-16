@@ -2,9 +2,11 @@ package store
 
 import (
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 )
 
@@ -378,4 +380,76 @@ func TestDBClose_And_Reopen(t *testing.T) {
 	if val != "persist.value" {
 		t.Errorf("config value mismatch after reopen: got %q", val)
 	}
+}
+
+func TestConcurrentPutMapping(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 50)
+
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			key := fmt.Sprintf("concurrent-key-%d", idx)
+			b3 := makeHash(byte(idx))
+			s2 := makeHash(byte(idx + 100))
+			if err := db.PutMapping(key, b3, s2); err != nil {
+				errCh <- fmt.Errorf("PutMapping(%s): %w", key, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("Concurrent write error: %v", err)
+	}
+
+	// Verify all keys were written
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("concurrent-key-%d", i)
+		_, _, err := db.LookupByKey(key)
+		if err != nil {
+			t.Errorf("Key %s not found after concurrent writes: %v", key, err)
+		}
+	}
+}
+
+func TestConcurrentGetAndPut(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	// Pre-populate some data
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("existing-%d", i)
+		db.PutMapping(key, makeHash(byte(i)), makeHash(byte(i+50)))
+	}
+
+	var wg sync.WaitGroup
+
+	// Concurrent readers
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			key := fmt.Sprintf("existing-%d", idx%10)
+			db.LookupByKey(key) // Should not panic
+		}(i)
+	}
+
+	// Concurrent writers
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			key := fmt.Sprintf("new-%d", idx)
+			db.PutMapping(key, makeHash(byte(idx+200)), makeHash(byte(idx+250)))
+		}(i)
+	}
+
+	wg.Wait() // No panics = success
 }

@@ -843,3 +843,113 @@ func TestResolveHashPrefix_DistinguishablePrefix(t *testing.T) {
 		t.Errorf("Expected hash2, got different hash")
 	}
 }
+
+func TestGetTimeline_NonExistent(t *testing.T) {
+	ivaldiDir, cleanup := setupTestRefsDir(t)
+	defer cleanup()
+
+	rm, err := NewRefsManager(ivaldiDir)
+	if err != nil {
+		t.Fatalf("Failed to create refs manager: %v", err)
+	}
+	defer rm.Close()
+
+	_, err = rm.GetTimeline("nonexistent", LocalTimeline)
+	if err == nil {
+		t.Fatal("Expected error for non-existent timeline, got nil")
+	}
+}
+
+func TestGetCurrentTimeline_NoHEAD(t *testing.T) {
+	ivaldiDir, cleanup := setupTestRefsDir(t)
+	defer cleanup()
+
+	// Don't create HEAD file
+	rm, err := NewRefsManager(ivaldiDir)
+	if err != nil {
+		t.Fatalf("Failed to create refs manager: %v", err)
+	}
+	defer rm.Close()
+
+	_, err = rm.GetCurrentTimeline()
+	if err == nil {
+		t.Fatal("Expected error when HEAD file is missing, got nil")
+	}
+}
+
+func TestGetCurrentTimeline_MalformedHEAD(t *testing.T) {
+	ivaldiDir, cleanup := setupTestRefsDir(t)
+	defer cleanup()
+
+	// Write garbage to HEAD
+	headPath := filepath.Join(ivaldiDir, "HEAD")
+	os.WriteFile(headPath, []byte("garbage content\n"), 0644)
+
+	rm, err := NewRefsManager(ivaldiDir)
+	if err != nil {
+		t.Fatalf("Failed to create refs manager: %v", err)
+	}
+	defer rm.Close()
+
+	_, err = rm.GetCurrentTimeline()
+	if err == nil {
+		t.Fatal("Expected error for malformed HEAD, got nil")
+	}
+}
+
+func TestGetSealByName_NonExistent(t *testing.T) {
+	ivaldiDir, cleanup := setupTestRefsDir(t)
+	defer cleanup()
+
+	rm, err := NewRefsManager(ivaldiDir)
+	if err != nil {
+		t.Fatalf("Failed to create refs manager: %v", err)
+	}
+	defer rm.Close()
+
+	_, _, _, err = rm.GetSealByName("nonexistent-seal")
+	if err == nil {
+		t.Fatal("Expected error for non-existent seal, got nil")
+	}
+}
+
+func TestRenameTimeline_ForceOverwriteCurrentHEAD(t *testing.T) {
+	ivaldiDir, cleanup := setupTestRefsDir(t)
+	defer cleanup()
+
+	rm, err := NewRefsManager(ivaldiDir)
+	if err != nil {
+		t.Fatalf("Failed to create refs manager: %v", err)
+	}
+	defer rm.Close()
+
+	// Create two timelines
+	rm.CreateTimeline("src", LocalTimeline, makeTestHash(1), makeTestHash(2), "", "source")
+	rm.CreateTimeline("dst", LocalTimeline, makeTestHash(3), makeTestHash(4), "", "destination")
+
+	// Set HEAD to dst (the destination)
+	rm.SetCurrentTimeline("dst")
+
+	// Force rename src -> dst should fail because dst is current HEAD
+	err = rm.RenameTimeline("src", "dst", LocalTimeline, true)
+	if err == nil {
+		t.Fatal("Expected error when force renaming to current HEAD timeline, got nil")
+	}
+	if !strings.Contains(err.Error(), "current HEAD") {
+		t.Errorf("Expected 'current HEAD' in error message, got: %v", err)
+	}
+
+	// Verify src still exists (rename was rejected)
+	if !rm.TimelineExists("src", LocalTimeline) {
+		t.Error("Source timeline should still exist after rejected rename")
+	}
+
+	// Verify dst still has its original data
+	tl, err := rm.GetTimeline("dst", LocalTimeline)
+	if err != nil {
+		t.Fatalf("GetTimeline failed: %v", err)
+	}
+	if tl.Blake3Hash != makeTestHash(3) {
+		t.Error("Expected dst to retain its original blake3 hash")
+	}
+}

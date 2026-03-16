@@ -1104,3 +1104,239 @@ func TestAutoshelving(t *testing.T) {
 	}
 }
 
+func TestMMR_ProofAfterManyAppends(t *testing.T) {
+	mmr := NewMMR()
+	n := 200
+	leaves := make([]Leaf, n)
+	indices := make([]uint64, n)
+
+	for i := 0; i < n; i++ {
+		leaves[i] = Leaf{
+			TreeRoot:   [32]byte{byte(i), byte(i >> 8)},
+			TimelineID: "main",
+			PrevIdx:    NoParent,
+			Author:     "A",
+			Message:    fmt.Sprintf("c%d", i),
+		}
+		if i > 0 {
+			leaves[i].PrevIdx = indices[i-1]
+		}
+		idx, _, err := mmr.AppendLeaf(leaves[i])
+		if err != nil {
+			t.Fatalf("AppendLeaf %d failed: %v", i, err)
+		}
+		indices[i] = idx
+	}
+
+	root := mmr.Root()
+	for i := 0; i < n; i++ {
+		proof, err := mmr.Proof(indices[i])
+		if err != nil {
+			t.Fatalf("Proof(%d) failed: %v", i, err)
+		}
+		if !mmr.Verify(leaves[i].Hash(), proof, root) {
+			t.Errorf("Proof verification failed for leaf %d", i)
+		}
+	}
+}
+
+func TestMMR_RootChangesOnEveryAppend(t *testing.T) {
+	mmr := NewMMR()
+	var prevRoot Hash
+
+	for i := 0; i < 20; i++ {
+		leaf := Leaf{
+			TreeRoot:   [32]byte{byte(i + 1)},
+			TimelineID: "main",
+			PrevIdx:    NoParent,
+			Author:     "A",
+			Message:    fmt.Sprintf("c%d", i),
+		}
+		if i > 0 {
+			leaf.PrevIdx = uint64(i - 1)
+		}
+		_, _, err := mmr.AppendLeaf(leaf)
+		if err != nil {
+			t.Fatalf("AppendLeaf %d failed: %v", i, err)
+		}
+
+		currentRoot := mmr.Root()
+		if i > 0 && currentRoot == prevRoot {
+			t.Errorf("Root did not change after append %d", i)
+		}
+		prevRoot = currentRoot
+	}
+}
+
+func TestMMR_GetLeaf_AllIndices(t *testing.T) {
+	mmr := NewMMR()
+	n := 50
+	messages := make([]string, n)
+
+	for i := 0; i < n; i++ {
+		messages[i] = fmt.Sprintf("commit-%d", i)
+		leaf := Leaf{
+			TreeRoot:   [32]byte{byte(i)},
+			TimelineID: "main",
+			PrevIdx:    NoParent,
+			Author:     "A",
+			Message:    messages[i],
+		}
+		if i > 0 {
+			leaf.PrevIdx = uint64(i - 1)
+		}
+		_, _, err := mmr.AppendLeaf(leaf)
+		if err != nil {
+			t.Fatalf("AppendLeaf %d failed: %v", i, err)
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		leaf, err := mmr.GetLeaf(uint64(i))
+		if err != nil {
+			t.Fatalf("GetLeaf(%d) failed: %v", i, err)
+		}
+		if leaf.Message != messages[i] {
+			t.Errorf("GetLeaf(%d): expected message %q, got %q", i, messages[i], leaf.Message)
+		}
+	}
+}
+
+func TestPersistentMMR_AppendThenReloadThenAppend(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ivaldi-pmmr-reload-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ivaldiDir := filepath.Join(tmpDir, ".ivaldi")
+	os.MkdirAll(filepath.Join(ivaldiDir, "objects"), 0755)
+	casStore := cas.NewMemoryCAS()
+
+	// Phase 1: Append 5 leaves
+	pmmr, err := NewPersistentMMR(casStore, ivaldiDir)
+	if err != nil {
+		t.Fatalf("NewPersistentMMR failed: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		leaf := Leaf{
+			TreeRoot: [32]byte{byte(i)},
+			PrevIdx:  NoParent,
+			Author:   "A",
+			Message:  fmt.Sprintf("phase1-%d", i),
+		}
+		if i > 0 {
+			leaf.PrevIdx = uint64(i - 1)
+		}
+		_, _, err := pmmr.AppendLeaf(leaf)
+		if err != nil {
+			t.Fatalf("Phase 1 append %d failed: %v", i, err)
+		}
+	}
+	pmmr.Close()
+
+	// Phase 2: Reload, append 5 more
+	pmmr2, err := NewPersistentMMR(casStore, ivaldiDir)
+	if err != nil {
+		t.Fatalf("Reload PersistentMMR failed: %v", err)
+	}
+	defer pmmr2.Close()
+
+	if pmmr2.Size() != 5 {
+		t.Fatalf("Expected size 5 after reload, got %d", pmmr2.Size())
+	}
+
+	for i := 5; i < 10; i++ {
+		leaf := Leaf{
+			TreeRoot: [32]byte{byte(i)},
+			PrevIdx:  uint64(i - 1),
+			Author:   "A",
+			Message:  fmt.Sprintf("phase2-%d", i),
+		}
+		_, _, err := pmmr2.AppendLeaf(leaf)
+		if err != nil {
+			t.Fatalf("Phase 2 append %d failed: %v", i, err)
+		}
+	}
+
+	if pmmr2.Size() != 10 {
+		t.Fatalf("Expected size 10, got %d", pmmr2.Size())
+	}
+
+	// Verify old leaves are still accessible
+	for i := 0; i < 5; i++ {
+		leaf, err := pmmr2.GetLeaf(uint64(i))
+		if err != nil {
+			t.Fatalf("GetLeaf(%d) after reload+append failed: %v", i, err)
+		}
+		expected := fmt.Sprintf("phase1-%d", i)
+		if leaf.Message != expected {
+			t.Errorf("Leaf %d message: expected %q, got %q", i, expected, leaf.Message)
+		}
+	}
+
+	// Verify new leaves too
+	for i := 5; i < 10; i++ {
+		leaf, err := pmmr2.GetLeaf(uint64(i))
+		if err != nil {
+			t.Fatalf("GetLeaf(%d) failed: %v", i, err)
+		}
+		expected := fmt.Sprintf("phase2-%d", i)
+		if leaf.Message != expected {
+			t.Errorf("Leaf %d message: expected %q, got %q", i, expected, leaf.Message)
+		}
+	}
+}
+
+func TestHistoryManager_CommitAutoSetsPrevIdx(t *testing.T) {
+	mmr := NewMMR()
+	timelineStore := NewMemoryTimelineStore()
+	manager := NewHistoryManager(mmr, timelineStore)
+
+	// First commit should have NoParent
+	leaf1 := Leaf{TreeRoot: [32]byte{1}, Author: "A", Message: "First"}
+	idx1, _, err := manager.Commit("main", leaf1)
+	if err != nil {
+		t.Fatalf("Commit 1 failed: %v", err)
+	}
+
+	retrieved1, _ := manager.Accumulator().GetLeaf(idx1)
+	if retrieved1.PrevIdx != NoParent {
+		t.Errorf("First commit should have PrevIdx=NoParent, got %d", retrieved1.PrevIdx)
+	}
+
+	// Second commit should auto-set PrevIdx to first commit
+	leaf2 := Leaf{TreeRoot: [32]byte{2}, Author: "A", Message: "Second"}
+	idx2, _, err := manager.Commit("main", leaf2)
+	if err != nil {
+		t.Fatalf("Commit 2 failed: %v", err)
+	}
+
+	retrieved2, _ := manager.Accumulator().GetLeaf(idx2)
+	if retrieved2.PrevIdx != idx1 {
+		t.Errorf("Second commit PrevIdx should be %d, got %d", idx1, retrieved2.PrevIdx)
+	}
+}
+
+func TestHistoryManager_CommitSetsTimelineID(t *testing.T) {
+	mmr := NewMMR()
+	timelineStore := NewMemoryTimelineStore()
+	manager := NewHistoryManager(mmr, timelineStore)
+
+	leaf := Leaf{
+		TreeRoot:   [32]byte{1},
+		TimelineID: "should-be-overwritten",
+		Author:     "A",
+		Message:    "Test",
+	}
+	idx, _, err := manager.Commit("feature-branch", leaf)
+	if err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	retrieved, _ := manager.Accumulator().GetLeaf(idx)
+	if retrieved.TimelineID != "feature-branch" {
+		t.Errorf("Expected TimelineID 'feature-branch', got %q", retrieved.TimelineID)
+	}
+}
+

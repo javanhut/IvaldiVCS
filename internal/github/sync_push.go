@@ -1064,16 +1064,20 @@ func (rs *RepoSyncer) updateTimelineWithGitHubSHA(localTimelineName, remoteBranc
 	// Keep the corresponding remote timeline reference in sync after successful pushes.
 	remoteTimeline, err := refsManager.GetTimeline(remoteBranch, refs.RemoteTimeline)
 	if err == nil {
-		_ = refsManager.UpdateRemoteTimeline(remoteBranch, blake3Hash, remoteTimeline.SHA256Hash, githubCommitSHA)
+		if err := refsManager.UpdateRemoteTimeline(remoteBranch, blake3Hash, remoteTimeline.SHA256Hash, githubCommitSHA); err != nil {
+			logging.Warn("Failed to update remote timeline", "branch", remoteBranch, "error", err)
+		}
 	} else {
-		_ = refsManager.CreateTimeline(
+		if err := refsManager.CreateTimeline(
 			remoteBranch,
 			refs.RemoteTimeline,
 			blake3Hash,
 			[32]byte{},
 			githubCommitSHA,
 			fmt.Sprintf("Remote branch from upload (%s)", remoteBranch),
-		)
+		); err != nil {
+			logging.Warn("Failed to create remote timeline", "branch", remoteBranch, "error", err)
+		}
 	}
 
 	return nil
