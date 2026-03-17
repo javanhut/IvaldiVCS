@@ -590,8 +590,5 @@ func (l *Loader) filesEqual(a, b FileMetadata) bool {
 		a.FileRef.Hash == b.FileRef.Hash &&
 		a.FileRef.Kind == b.FileRef.Kind &&
 		a.FileRef.Size == b.FileRef.Size &&
-		a.ModTime.Equal(b.ModTime) &&
-		a.Mode == b.Mode &&
-		a.Size == b.Size &&
-		a.Checksum == b.Checksum
+		a.Size == b.Size
 }

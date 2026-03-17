@@ -400,6 +400,68 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+func TestDiffIgnoresMetadataOnlyChanges(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	builder := NewBuilder(casStore)
+	loader := NewLoader(casStore)
+
+	oldFile := createTestFile("file.txt", "same content")
+	newFile := oldFile
+	newFile.ModTime = oldFile.ModTime.Add(5 * time.Minute)
+	newFile.Mode = 0755
+
+	oldIndex, err := builder.Build([]FileMetadata{oldFile})
+	if err != nil {
+		t.Fatalf("Build old index failed: %v", err)
+	}
+
+	newIndex, err := builder.Build([]FileMetadata{newFile})
+	if err != nil {
+		t.Fatalf("Build new index failed: %v", err)
+	}
+
+	diff, err := loader.Diff(oldIndex, newIndex)
+	if err != nil {
+		t.Fatalf("Diff failed: %v", err)
+	}
+
+	if len(diff.Modified) != 0 {
+		t.Fatalf("Expected 0 modified files for metadata-only changes, got %d", len(diff.Modified))
+	}
+	if len(diff.Added) != 0 || len(diff.Removed) != 0 {
+		t.Fatalf("Expected no added/removed files, got added=%d removed=%d", len(diff.Added), len(diff.Removed))
+	}
+}
+
+func TestDiffIgnoresChecksumMismatchWhenFileRefMatches(t *testing.T) {
+	casStore := cas.NewMemoryCAS()
+	builder := NewBuilder(casStore)
+	loader := NewLoader(casStore)
+
+	oldFile := createTestFile("file.txt", "same content")
+	newFile := oldFile
+	newFile.Checksum = cas.Hash{}
+
+	oldIndex, err := builder.Build([]FileMetadata{oldFile})
+	if err != nil {
+		t.Fatalf("Build old index failed: %v", err)
+	}
+
+	newIndex, err := builder.Build([]FileMetadata{newFile})
+	if err != nil {
+		t.Fatalf("Build new index failed: %v", err)
+	}
+
+	diff, err := loader.Diff(oldIndex, newIndex)
+	if err != nil {
+		t.Fatalf("Diff failed: %v", err)
+	}
+
+	if len(diff.Modified) != 0 {
+		t.Fatalf("Expected 0 modified files for checksum mismatch with identical file refs, got %d", len(diff.Modified))
+	}
+}
+
 func TestSameContentSameHash(t *testing.T) {
 	casStore := cas.NewMemoryCAS()
 	builder := NewBuilder(casStore)
